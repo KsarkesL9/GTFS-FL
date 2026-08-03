@@ -1,0 +1,87 @@
+"""Jednorazowy eksport zakresu dat na Drive.
+
+Do migracji: przed przeniesieniem bazy na VPS trzeba wypchnąć na Drive cały
+miesiąc historyczny, dzień po dniu. Zadanie nocne obsługuje tylko dobę D-1,
+więc historię robi się tym skryptem.
+
+Uruchamiaj LOKALNIE, przed przycięciem bazy - tu jest dużo miejsca na dysku
+i można spokojnie powtórzyć nieudany dzień.
+
+    python scripts/backfill_export.py --od 2026-07-01 --do 2026-08-02
+    python scripts/backfill_export.py --od 2026-07-01 --do 2026-08-02 --bez-wysylki
+"""
+
+import argparse
+from datetime import date, datetime, timedelta
+
+import psycopg
+from loguru import logger
+
+from gtfs_olap.config import DB_URL, EXPORT_DIR
+from gtfs_olap.maintenance import export
+from gtfs_olap.maintenance.rclone import dostepny, wyslij_i_zweryfikuj
+
+
+def _zakres_w_bazie() -> tuple[date, date] | None:
+    with psycopg.connect(DB_URL) as conn, conn.cursor() as cur:
+        cur.execute("SELECT min(ts)::date, max(ts)::date FROM fakt_opoznienia")
+        od, do = cur.fetchone()
+    return (od, do) if od else None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--od", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date())
+    ap.add_argument("--do", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date())
+    ap.add_argument("--bez-wysylki", action="store_true",
+                    help="tylko zapis Parquetów lokalnie, bez rclone")
+    args = ap.parse_args()
+
+    zakres = _zakres_w_bazie()
+    if zakres is None:
+        logger.error("fakt_opoznienia jest pusta - nie ma czego eksportować")
+        return 1
+    logger.info(f"Zakres dostępny w bazie: {zakres[0]} → {zakres[1]}")
+
+    od = args.od or zakres[0]
+    do = args.do or zakres[1]
+    if od > do:
+        logger.error("--od jest późniejsze niż --do")
+        return 1
+
+    if not args.bez_wysylki and not dostepny():
+        return 1
+
+    dzien = od
+    puste = []
+    while dzien <= do:
+        logger.info(f"--- {dzien} ---")
+        if export.eksport_faktow(dzien) is None:
+            puste.append(dzien)
+        export.eksport_agregatu(dzien)
+        export.eksport_etl_run(dzien)
+        dzien += timedelta(days=1)
+
+    export.eksport_wymiarow()
+
+    if puste:
+        logger.warning(f"Dni bez faktów ({len(puste)}): "
+                       f"{', '.join(str(d) for d in puste[:10])}"
+                       f"{' ...' if len(puste) > 10 else ''}")
+        logger.warning("To luki w zbieraniu - sprawdź scripts/inventory_gaps.py")
+
+    if args.bez_wysylki:
+        logger.info(f"Pominięto wysyłkę. Pliki w {EXPORT_DIR}")
+        return 0
+
+    if not wyslij_i_zweryfikuj(EXPORT_DIR, "export"):
+        logger.error("Wysyłka nieudana - NIE przycinaj bazy")
+        return 1
+
+    logger.success("Backfill wysłany i zweryfikowany. Dopiero teraz można "
+                   "przycinać bazę (drop_chunks).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

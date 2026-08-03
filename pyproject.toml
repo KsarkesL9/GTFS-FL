@@ -13,6 +13,8 @@ dependencies = [
     "psycopg[binary]>=3.1.0",
     "loguru>=0.7.0",
     "gtfs-realtime-bindings>=1.0.0",
+    # Interfejs do części uczeniowej (decyzja D3) i format archiwum na Drive.
+    "pyarrow>=15.0.0",
 ]
 
 [tool.setuptools.packages.find]

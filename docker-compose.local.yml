@@ -1,0 +1,26 @@
+# Nakładka do pracy LOKALNEJ (Windows / dev).
+#
+# Użycie - zawsze z oboma plikami:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
+#
+# Po co: docker-compose.yml montuje /srv/gtfs (ścieżki linuksowe VPS-a).
+# Uruchomiony bez tej nakładki na Windowsie NIE zobaczyłby Twojej istniejącej
+# bazy - dane historyczne leżą w nazwanym wolumenie tsdb-data, stworzonym
+# przez pierwotną wersję compose. Nakładka podmienia bind-mounty z powrotem
+# na ten wolumen i na katalog ./data w repo.
+services:
+  db:
+    volumes:
+      - tsdb-data:/var/lib/postgresql/data
+
+  collector:
+    volumes:
+      - ./data:/data
+
+  maintenance:
+    volumes:
+      - ./data:/data
+      - ./secrets/rclone.conf:/home/gtfs/.config/rclone/rclone.conf:ro
+
+volumes:
+  tsdb-data:

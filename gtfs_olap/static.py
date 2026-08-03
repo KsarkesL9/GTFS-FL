@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
+import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -18,7 +20,7 @@ from loguru import logger
 
 from gtfs_olap.config import (
     CA_DDL, CKAN_API, DB_URL, DDL, DEDUP_KEYS, TRANSPORT_TYPES, DAYS_PL,
-    WEEKDAY_COLS, DIM_DATA_LOOKBACK_DAYS,
+    WEEKDAY_COLS, DIM_DATA_LOOKBACK_DAYS, RAW_DIR, TZ,
 )
 
 ZIP_RE = re.compile(r"schedule_ZTM_(\d{4})\.(\d{2})\.(\d{2})_(\d+)_(\d+)\.zip")
@@ -49,7 +51,10 @@ class FeedMeta:
 
 def _fetch_active_packages(dest: Path, horizon_days: int = 14) -> list[Path]:
     """Pobiera paczki pokrywające okres [dziś, dziś + horizon_days]."""
-    today = date.today()
+    # datetime.now(TZ), nie date.today() - VPS stoi na UTC, więc między 23:00
+    # a 00:00 czasu warszawskiego date.today() zwróciłoby poprzedni dzień
+    # i przesunęło okno wyboru paczek o dobę.
+    today = datetime.now(TZ).date()
     target_days = {today + timedelta(days=i) for i in range(horizon_days)}
 
     resp = httpx.get(CKAN_API, timeout=30.0)
@@ -267,14 +272,25 @@ def _copy_df(conn, table: str, df: pd.DataFrame, cols: list[str]):
     logger.info(f"  {table}: {len(df):,} wierszy")
 
 
-def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str]):
+def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str],
+               set_overrides: dict[str, str] | None = None):
     """COPY do tabeli tymczasowej, potem INSERT ... ON CONFLICT (pk) DO UPDATE.
 
     TRUNCATE jest niemożliwe odkąd fakt_opoznienia ma FK do wymiarów - usunęłoby
     referencje istniejących faktów. UPSERT pozwala bezpiecznie re-runować static
-    ETL i naturalnie kumuluje historię w dim_data."""
+    ETL i naturalnie kumuluje historię w dim_data.
+
+    set_overrides pozwala podmienić wyrażenie po prawej stronie SET dla wybranej
+    kolumny - patrz dim_data w _load_to_db, gdzie domyślne EXCLUDED.typ_dnia
+    niszczyłoby dane historyczne."""
+    set_overrides = set_overrides or {}
     stg = f"_stg_{table}"
-    set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c not in pk)
+    assignments = []
+    for c in cols:
+        if c in pk:
+            continue
+        assignments.append(f"{c}={set_overrides.get(c, 'EXCLUDED.' + c)}")
+    set_clause = ", ".join(assignments)
     pk_clause = ", ".join(pk)
     with conn.cursor() as cur:
         cur.execute(f"CREATE TEMP TABLE {stg} (LIKE {table} INCLUDING DEFAULTS) ON COMMIT DROP")
@@ -287,19 +303,120 @@ def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str
         )
 
 
+LOOKUP_COLS = ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
+               "rozkladowy_przyjazd", "linia_id", "kierunek", "kierunek_opis",
+               "operator_id", "offset_dnia"]
+
+
+def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
+    """SHA-256 treści rozkładu, niezależny od kolejności wierszy.
+
+    Bez tego każde uruchomienie static ETL tworzyło nową wersję i dokładało
+    1,4 mln wierszy do lookup_schedule, nawet gdy ZTM nic nie zmienił. Poza
+    kosztem dysku psuło to rozdz. 4.1 specyfikacji, która traktuje każdą
+    zmianę dim_wersja_rozkladu jako oznaczonego kandydata na dryf - codzienny
+    cron zamieniłby te etykiety w 60 sztuk szumu."""
+    cols = [c for c in LOOKUP_COLS if c != "wersja_id"]
+    ordered = lookup[cols].sort_values(cols, kind="mergesort")
+    return hashlib.sha256(
+        ordered.to_csv(index=False, header=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
+    """Zrzuca lookup_schedule nowej wersji do Parquetu w archiwum surowym.
+
+    Kryterium K4 wymaga odtwarzalności eksperymentów z archiwum. Bez tego
+    zrzutu nie da się później odtworzyć mapowania kurs -> operator z danego
+    momentu, czyli podziału na klientów federacji - a lookup_schedule jest
+    kasowany z VPS, gdy wersja przestaje być aktywna."""
+    dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
+    dest.mkdir(parents=True, exist_ok=True)
+    out = dest / f"lookup_schedule_w{wersja_id}.parquet"
+    tmp = dest / (out.name + ".tmp")
+    lookup.to_parquet(tmp, index=False, compression="zstd")
+    tmp.replace(out)          # atomowo - uploader nigdy nie zobaczy połówki
+    logger.info(f"  archiwum: {out.name} ({len(lookup):,} wierszy)")
+
+
+def _archive_packages(zip_paths: list[Path], dzien: date):
+    """Kopiuje pobrane paczki GTFS do archiwum surowego.
+
+    CKAN GZM rotuje zasoby - paczki sprzed kilku tygodni znikają z platformy.
+    Bez nich nie odtworzysz ani lookup_schedule z danego momentu, ani podziału
+    na klientów federacji, więc kryterium K4 byłoby nieosiągalne."""
+    dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
+    dest.mkdir(parents=True, exist_ok=True)
+    skopiowane = 0
+    for zp in zip_paths:
+        target = dest / zp.name
+        if target.exists():
+            continue
+        tmp = dest / (zp.name + ".tmp")
+        shutil.copy2(zp, tmp)
+        tmp.replace(target)
+        skopiowane += 1
+    logger.info(f"  archiwum paczek: {skopiowane} nowych z {len(zip_paths)} → {dest}")
+
+
+def _prune_lookup_schedule(conn, aktywna_wersja: int):
+    """Usuwa wiersze lookup_schedule wersji, które nie są już potrzebne.
+
+    Zostaje wersja aktywna (ładuje ją cache RT przy każdym starcie) oraz
+    każda, do której odwołują się fakty w oknie retencji. Treść usuwanych
+    wersji jest już w Parquecie na Drive, więc odtwarzalność nie cierpi."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            DELETE FROM lookup_schedule
+            WHERE wersja_id <> %s
+              AND wersja_id NOT IN (
+                  SELECT DISTINCT wersja_id FROM fakt_opoznienia
+                  WHERE wersja_id IS NOT NULL
+              )
+        """, (aktywna_wersja,))
+        if cur.rowcount:
+            logger.info(f"  lookup_schedule: usunięto {cur.rowcount:,} "
+                        f"wierszy nieaktualnych wersji")
+
+
 def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
+    odcisk = _schedule_fingerprint(lookup)
+
     with psycopg.connect(DB_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(DDL)
 
             cur.execute(
-                "INSERT INTO dim_wersja_rozkladu "
-                "(nazwa_paczki, obowiazuje_od, obowiazuje_do) "
-                "VALUES (%s, %s, %s) RETURNING wersja_id",
-                (meta.package_name, meta.feed_start_date, meta.feed_end_date)
+                "SELECT wersja_id, odcisk FROM dim_wersja_rozkladu "
+                "ORDER BY zaladowano DESC LIMIT 1"
             )
-            wersja_id = cur.fetchone()[0]
-            logger.info(f"Nowa wersja rozkładu: {wersja_id}")
+            row = cur.fetchone()
+            bez_zmian = row is not None and row[1] == odcisk
+
+            if bez_zmian:
+                wersja_id = row[0]
+                cur.execute(
+                    "UPDATE dim_wersja_rozkladu "
+                    "SET obowiazuje_do = GREATEST(obowiazuje_do, %s) "
+                    "WHERE wersja_id = %s",
+                    (meta.feed_end_date, wersja_id)
+                )
+                logger.info(
+                    f"Rozkład bez zmian (odcisk {odcisk[:12]}), "
+                    f"zostaję na wersji {wersja_id}"
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO dim_wersja_rozkladu "
+                    "(nazwa_paczki, obowiazuje_od, obowiazuje_do, odcisk) "
+                    "VALUES (%s, %s, %s, %s) RETURNING wersja_id",
+                    (meta.package_name, meta.feed_start_date,
+                     meta.feed_end_date, odcisk)
+                )
+                wersja_id = cur.fetchone()[0]
+                logger.success(
+                    f"Nowa wersja rozkładu: {wersja_id} (odcisk {odcisk[:12]})"
+                )
 
         _upsert_df(conn, "dim_linia", dims["linia"],
                    ["linia_id", "nazwa_krotka", "nazwa_dluga", "srodek_transportu", "typ_linii"],
@@ -310,17 +427,30 @@ def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
         _upsert_df(conn, "dim_operator", dims["operator"],
                    ["operator_id", "nazwa"],
                    ["operator_id"])
+
+        # UWAGA. typ_dnia jest wyliczany z calendar pobranych paczek, które
+        # pokrywają tylko [dziś, dziś+13]. Dla dat przeszłych z okna
+        # DIM_DATA_LOOKBACK_DAYS mask jest pusty i _build_dim_data zwraca
+        # 'brak rozkładu'. Domyślne EXCLUDED.typ_dnia nadpisywałoby tym
+        # śmieciem poprawne wartości zapisane, gdy ta data była jeszcze
+        # przyszłością - czyli po kilku uruchomieniach CAŁA historia
+        # dim_data stawała się 'brak rozkładu'. A typ_dnia jest wprost
+        # potrzebny do cechy r(t) z rozdz. 8 specyfikacji.
         _upsert_df(conn, "dim_data", dims["data"],
                    ["data", "rok", "miesiac", "tydzien_iso", "dzien_tygodnia", "nazwa_dnia", "typ_dnia"],
-                   ["data"])
+                   ["data"],
+                   set_overrides={
+                       "typ_dnia": "CASE WHEN EXCLUDED.typ_dnia = 'brak rozkładu' "
+                                   "THEN dim_data.typ_dnia ELSE EXCLUDED.typ_dnia END"
+                   })
 
-        lookup = lookup.copy()
-        lookup["wersja_id"] = wersja_id
-        _copy_df(conn, "lookup_schedule", lookup,
-                 ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
-                  "rozkladowy_przyjazd", "linia_id", "kierunek", "kierunek_opis",
-                  "operator_id", "offset_dnia"])
+        if not bez_zmian:
+            lookup = lookup.copy()
+            lookup["wersja_id"] = wersja_id
+            _copy_df(conn, "lookup_schedule", lookup, LOOKUP_COLS)
+            _export_lookup_snapshot(lookup, wersja_id, meta.feed_start_date)
 
+        _prune_lookup_schedule(conn, wersja_id)
         conn.commit()
 
     # Agregaty ciągłe muszą być w autocommit - TimescaleDB blokuje CREATE
@@ -337,12 +467,13 @@ def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
 
 def run(horizon_days: int = 14):
     """Pełen pipeline static ETL."""
-    today = date.today()
+    today = datetime.now(TZ).date()
     end = today + timedelta(days=horizon_days - 1)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         zip_paths = _fetch_active_packages(tmp_path, horizon_days)
+        _archive_packages(zip_paths, today)
 
         merge_dir = tmp_path / "merge"
         merge_dir.mkdir()

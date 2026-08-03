@@ -1,0 +1,12 @@
+# Harmonogram dla supercronica (5 pól, czas kontenera = Europe/Warsaw).
+#
+# Kolejność w ciągu nocy jest celowa:
+#   03:30 zadanie nocne - eksport doby D-1, wysyłka, dopiero potem kasowanie
+#   04:00 static ETL    - po eksporcie, żeby nowa wersja rozkładu i wywołany
+#                         nią reload cache'u nie wpadły w środek eksportu
+#
+# min  godz  dzień  mies  dzieńTyg  polecenie
+5      *     *      *     *         python -m gtfs_olap.maintenance.upload_raw
+30     3     *      *     *         python -m gtfs_olap.maintenance.nightly
+0      4     *      *     *         python scripts/run_static_etl.py
+*/10   *     *      *     *         python -m gtfs_olap.maintenance.healthcheck

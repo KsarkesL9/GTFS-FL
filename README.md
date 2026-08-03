@@ -191,44 +191,69 @@ Próba wyliczenia punktualności z milionów surowych wierszy bezpośrednio podc
 
 ### 6. Bezpieczeństwo i retencja danych
 - **Klucze obce (FK)**: Relacje między tabelą faktów a słownikami są wymuszane przez silnik PostgreSQL, co gwarantuje spójność i brak "osieroconych" opóźnień.
-- **Polityka usuwania**: Aby baza nie rosła w nieskończoność na dysku, wdrożono automatyczne usuwanie surowych faktów po 30 dniach i logów po 90 dniach. Dzięki agregatom ciągłym, historyczne dane statystyczne pozostają nienaruszone.
+- **Polityka usuwania**: Surowe fakty żyją lokalnie 48 godzin, a następnie są usuwane — ale **wyłącznie po potwierdzonym zapisie na Google Drive**. Nie ma tu polityki retencji TimescaleDB: kasuje ona według zegara, niezależnie od tego, czy dane gdziekolwiek dotarły, a utraconych migawek GTFS-RT nie da się odtworzyć. Kasowaniem steruje `maintenance/nightly.py`, dla którego każdy nieudany krok wcześniejszy oznacza pozostawienie danych nietkniętych. Agregaty ciągłe zostają w bazie przez cały projekt.
+
+### 7. Wersjonowanie rozkładu tylko przy realnej zmianie
+Static ETL uruchamiany codziennie tworzył wcześniej nową wersję rozkładu przy każdym przebiegu, dokładając ~1,4 mln wierszy do `lookup_schedule`. Poza kosztem dysku psuło to analizę: `dim_wersja_rozkladu` pełni rolę rejestru **rzeczywistych momentów dryfu**, więc 60 wersji wygenerowanych cronem zamieniłoby te etykiety w szum.
+- **Rozwiązanie**: Treść scalonego rozkładu jest hashowana (SHA-256, niezależnie od kolejności wierszy) i zapisywana w kolumnie `odcisk`. Nowa wersja powstaje tylko wtedy, gdy ZTM faktycznie coś zmienił. Przy okazji znika codzienne, zbędne przeładowanie cache'u w procesie RT.
 
 ---
 
 ## Jak uruchomić projekt
 
-### Krok 1: Uruchomienie bazy danych
-Projekt wymaga bazy danych PostgreSQL z rozszerzeniem TimescaleDB. Najwygodniej uruchomić ją za pomocą Dockera:
+Cała konfiguracja pochodzi ze zmiennych środowiskowych — nie ma już wartości zaszytych w kodzie. Skopiuj `.env.example` do `.env` i uzupełnij; brak wymaganej zmiennej kończy proces od razu przy starcie, celowo, żeby kolektor nigdy nie pisał po cichu w niewłaściwe miejsce.
+
+### Wariant A: wdrożenie na VPS (docelowy)
+
+Trzy usługi w jednym `docker compose`: baza, kolektor i kontener utrzymaniowy z harmonogramem.
+
+1. Katalogi na hoście (`10001` to UID użytkownika z `Dockerfile`):
+   ```bash
+   sudo mkdir -p /srv/gtfs/pgdata /srv/gtfs/data && sudo chown -R 10001:10001 /srv/gtfs/data
+   ```
+2. Konfiguracja rclone do Google Drive. Token wygeneruj **na swoim komputerze** i skopiuj wynik do `secrets/rclone.conf`:
+   ```bash
+   rclone authorize "drive"
+   ```
+3. Start:
+   ```bash
+   cp .env.example .env && docker compose up -d --build
+   ```
+4. Pierwsze zasilenie słowników:
+   ```bash
+   docker compose exec maintenance python scripts/run_static_etl.py
+   ```
+
+Dalej harmonogram (`crontab`) prowadzi się sam: wysyłka archiwum co godzinę, zadanie nocne o 03:30, static ETL o 04:00, healthcheck co 10 minut.
+
+### Wariant B: uruchomienie lokalne (rozwój)
+
 ```bash
-docker compose up -d
+docker compose up -d db
+python -m venv .venv && .venv\Scripts\Activate.ps1   # Windows; na Linuksie: source .venv/bin/activate
+pip install -e .
 ```
 
-### Krok 2: Przygotowanie środowiska Python
-1. Stwórz i aktywuj wirtualne środowisko (venv):
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1        # Windows (PowerShell)
-   # lub
-   source .venv/bin/activate          # Linux / macOS
-   ```
-2. Zainstaluj biblioteki w trybie deweloperskim (edytowalnym):
-   ```bash
-   pip install -e .
-   ```
+Ustaw co najmniej `GTFS_DB_URL` i `GTFS_RAW_DIR`, po czym:
 
-### Krok 3: Uruchomienie zasilania danymi
-1. **Zasilenie słowników (Static ETL)** – wykonaj raz, aby pobrać rozkłady i zbudować tabele:
-   ```bash
-   python scripts/run_static_etl.py
-   ```
-2. **Pętla czasu rzeczywistego (RT ETL)** – proces ciągły, który odpytuje serwer o opóźnienia i zapisuje je w bazie:
-   ```bash
-   python scripts/run_rt_etl.py
-   ```
-   *Wskazówka: Możesz uruchomić pętlę jednorazowo (np. do testów) za pomocą flagi `--once`:*
-   ```bash
-   python scripts/run_rt_etl.py --once
-   ```
+```bash
+python scripts/run_static_etl.py
+python scripts/run_rt_etl.py --once
+```
+
+### Skrypty diagnostyczne
+
+```bash
+python scripts/check_dim_data.py
+```
+
+Sprawdza, czy `dim_data.typ_dnia` nie ucierpiał na wcześniejszej wersji UPSERT-a — uruchom przed migracją danych historycznych.
+
+```bash
+python scripts/inventory_gaps.py
+```
+
+Inwentaryzuje luki w zbieraniu na podstawie nieciągłości `fakt_etl_run` i zapisuje je do Parquetu (wymaganie rozdz. 14.1 specyfikacji projektu badawczego).
 
 ---
 

@@ -1,0 +1,18 @@
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Poświadczenia i dane - nigdy do obrazu
+.env
+secrets/
+data/
+
+# Artefakty prezentacyjne, nieużywane w kontenerze
+docs/
+*.pbix
+*.pdf
+kepler.gl.html

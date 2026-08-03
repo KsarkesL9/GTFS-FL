@@ -2,14 +2,60 @@ services:
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: gtfs-tsdb
+    restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: gtfs_olap
+      TZ: Europe/Warsaw
+    # UWAGA. Bind wyłącznie na pętlę zwrotną. Publikacja na 0.0.0.0 na VPS
+    # z publicznym IP oznacza bazę wystawioną do internetu - dostęp z
+    # laptopa/Power BI robi się tunelem SSH, nie otwartym portem.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - tsdb-data:/var/lib/postgresql/data
+      - /srv/gtfs/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    command: >
+      postgres
+        -c shared_buffers=1GB
+        -c max_wal_size=2GB
+        -c timescaledb.max_background_workers=8
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
 
-volumes:
-  tsdb-data:
+  collector:
+    build: .
+    container_name: gtfs-collector
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    env_file: .env
+    volumes:
+      - /srv/gtfs/data:/data
+    # SIGTERM jest obsłużony w rt.py, ale pętla domyka bieżącą iterację.
+    # Domyślne 10 s bywa za mało, gdy trwa akurat reload cache'u.
+    stop_grace_period: 30s
+    command: python scripts/run_rt_etl.py
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+
+  maintenance:
+    build: .
+    container_name: gtfs-maintenance
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    env_file: .env
+    volumes:
+      - /srv/gtfs/data:/data
+      # Tylko do odczytu - kontener nie ma powodu modyfikować poświadczeń.
+      - ./secrets/rclone.conf:/home/gtfs/.config/rclone/rclone.conf:ro
+    command: supercronic /app/crontab
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}

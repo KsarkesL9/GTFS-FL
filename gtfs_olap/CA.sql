@@ -20,12 +20,20 @@ FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, linia_id, operator_id
 WITH NO DATA;
 
--- Polityka odświeżania
+-- UWAGA. start_offset MUSI być krótszy niż okno retencji surowych faktów
+-- (48h, patrz maintenance/nightly.py). Odświeżenie agregatu przelicza kubełki
+-- z surowych danych - jeśli okno sięga poza retencję, przeliczy je z pustki
+-- i SKASUJE poprawne, zmaterializowane wiersze. Przy 6h mamy 8x zapasu.
+--
+-- remove_* przed add_*, bo add_continuous_aggregate_policy(if_not_exists=>true)
+-- przy istniejącej polityce o INNEJ konfiguracji nie zmienia jej - wypisuje
+-- warning i wychodzi. Sama zmiana wartości w tym pliku by nie zadziałała.
+SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min',
+    if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min',
-    start_offset      => INTERVAL '7 days',
+    start_offset      => INTERVAL '6 hours',
     end_offset        => INTERVAL '10 minutes',
-    schedule_interval => INTERVAL '5 minutes',
-    if_not_exists     => true);
+    schedule_interval => INTERVAL '5 minutes');
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_1h
 WITH (timescaledb.continuous) AS
@@ -96,15 +104,45 @@ SELECT
 FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, przystanek_id, linia_id
 WITH NO DATA;
--- Polityka odświeżania
+-- start_offset jak wyżej - czyta bezpośrednio z fakt_opoznienia, więc podlega
+-- temu samemu ograniczeniu retencji.
+SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
+    if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
-    start_offset      => INTERVAL '7 days',
+    start_offset      => INTERVAL '6 hours',
     end_offset        => INTERVAL '10 minutes',
-    schedule_interval => INTERVAL '5 minutes',
-    if_not_exists     => true);
+    schedule_interval => INTERVAL '5 minutes');
 
--- Polityka retencyjna
-SELECT add_retention_policy('fakt_opoznienia', INTERVAL '30 days', if_not_exists => true);
+-- ============================================================================
+-- Retencja
+-- ============================================================================
+--
+-- UWAGA. Na fakt_opoznienia i fakt_etl_run NIE MA polityki retencji i nie
+-- wolno jej dodawać. Polityka kasuje ślepo, według zegara. W architekturze
+-- "VPS jako przekaźnik" surowe fakty żyją lokalnie tylko do czasu wysłania
+-- na Drive, a jedyne bezpieczne kasowanie to takie, które nastąpi PO
+-- potwierdzonej weryfikacji uploadu. Robi to maintenance/nightly.py przez
+-- jawne drop_chunks(). Awaria Drive'a na dwie doby + ślepa retencja =
+-- nieodwracalna utrata danych, których rozdz. 7.1 specyfikacji nie pozwala
+-- odtworzyć.
+--
+-- Poniższe remove_* są celowe: usuwają polityki 30/90-dniowe założone przez
+-- wcześniejsze wersje tego pliku. Samo skasowanie linii add_* nie usunęłoby
+-- polityki już zainstalowanej w bazie.
+--
+-- (remove_retention_policy używa if_exists, a remove_continuous_aggregate_policy
+--  if_not_exists - to niespójność w API TimescaleDB, nie literówka.)
+SELECT remove_retention_policy('fakt_opoznienia', if_exists => true);
+SELECT remove_retention_policy('fakt_etl_run', if_exists => true);
 
--- Polityka retencyjna logów
-SELECT add_retention_policy('fakt_etl_run', INTERVAL '90 days', if_not_exists => true);
+-- Agregat przystankowy zasila wyłącznie Kepler/Power BI, nie jest wejściem
+-- modelu (rozdz. 4.1 wskazuje ca_opoznienia_15min). Jest ~10x większy od
+-- niego, więc tu ślepa retencja jest i bezpieczna, i pożądana - dane są
+-- odtwarzalne z Parquetów na Drive.
+SELECT remove_retention_policy('ca_opoznienia_15min_przystanek', if_exists => true);
+SELECT add_retention_policy('ca_opoznienia_15min_przystanek', INTERVAL '14 days');
+
+-- ca_opoznienia_15min, _1h i _dzien zostają bez retencji przez cały projekt.
+-- Razem to ~300 MB i jest to bezpośrednie źródło wektora cech z rozdz. 8.
+-- _1h i _dzien czytają z _15min, a nie z surowych faktów, więc ich
+-- start_offset (14 i 60 dni) jest bezpieczny mimo retencji 48h na faktach.

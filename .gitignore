@@ -24,3 +24,14 @@ Thumbs.db
 # Dane tymczasowe ETL (ZIP-y, rozpakowane paczki)
 *.zip
 tmp/
+
+# Poświadczenia rclone / Google Drive - NIGDY do repozytorium
+secrets/
+
+# Archiwum surowe, eksporty i stan lokalny (bind-mount /data na VPS)
+data/
+*.pb.gz
+*.parquet
+*.pbix
+kepler.gl.html
+
