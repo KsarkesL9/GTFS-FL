@@ -57,6 +57,23 @@ def _sprawdz_kolektor() -> str | None:
     return None
 
 
+def _wiek_systemu_h() -> float | None:
+    """Ile godzin zbiera ten system, licząc od pierwszego przebiegu ETL.
+
+    Potrzebne, żeby odróżnić 'zadanie nocne padło' od 'zadanie nocne nie
+    było jeszcze wymagalne' - patrz _sprawdz_zadanie_nocne."""
+    try:
+        with psycopg.connect(DB_URL, connect_timeout=10) as conn, conn.cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM (now() - min(started_at))) "
+                        "FROM fakt_etl_run")
+            row = cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0]) / 3600
+    except Exception:
+        return None
+
+
 def _sprawdz_staging() -> str | None:
     if not RAW_DIR.exists():
         return None
@@ -86,6 +103,16 @@ def _sprawdz_dysk() -> str | None:
 def _sprawdz_zadanie_nocne() -> str | None:
     znacznik = STATE_DIR / ZNACZNIK
     if not znacznik.exists():
+        # Świeże wdrożenie: zadanie nocne chodzi o 03:30, więc między
+        # uruchomieniem systemu a pierwszą nocą znacznika po prostu nie ma.
+        # Bez tego wyjątku healthcheck alarmowałby nieprzerwanie przez
+        # kilkanaście godzin po wdrożeniu - czyli uczyłby ignorowania
+        # alarmów dokładnie wtedy, gdy system jest najmniej sprawdzony.
+        wiek = _wiek_systemu_h()
+        if wiek is not None and wiek < MAX_NIGHTLY_H:
+            logger.info(f"Zadanie nocne jeszcze niewymagalne "
+                        f"(system zbiera {wiek:.1f} h z {MAX_NIGHTLY_H})")
+            return None
         return "brak znacznika zadania nocnego - nie wykonało się ani razu"
     wiek_h = (time.time() - znacznik.stat().st_mtime) / 3600
     if wiek_h > MAX_NIGHTLY_H:
