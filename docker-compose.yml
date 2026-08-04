@@ -67,7 +67,12 @@ services:
       # którego nie da się przenieść: "device or resource busy".
       # Katalog ./secrets musi należeć do UID 10001 (użytkownik z Dockerfile).
       - ./secrets:/home/gtfs/.config/rclone
-    command: supercronic /app/crontab
+    # Ścieżka BEZWZGLĘDNA, nie samo "supercronic". Jako PID 1 supercronic
+    # włącza reaping procesów potomnych i re-execuje sam siebie - a re-exec
+    # nie przeszukuje PATH. Przy relatywnym argv[0] kończy się to natychmiast
+    # "Failed to fork exec: no such file or directory" i pętlą restartów,
+    # jeszcze przed wczytaniem crontaba.
+    command: /usr/local/bin/supercronic /app/crontab
     logging:
       driver: json-file
       options: {max-size: "50m", max-file: "3"}

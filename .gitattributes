@@ -1,0 +1,22 @@
+# Repozytorium jest rozwijane na Windowsie, ale wdrażane na Linuksie.
+# Bez wymuszenia LF pliki wykonywane w kontenerze przyjeżdżają z CRLF:
+# crontab przestaje się parsować, a skrypty .sh wywalają się na interpreterze
+# ("bad interpreter: /usr/bin/env bash^M"). Wymuszamy LF w całym drzewie.
+* text=auto eol=lf
+
+# Jawnie dla plików, w których CRLF jest błędem krytycznym, a nie kosmetyką.
+crontab     text eol=lf
+*.sh        text eol=lf
+*.sql       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf
+.env.example text eol=lf
+
+# Binaria - bez jakiejkolwiek konwersji.
+*.pbix    binary
+*.pdf     binary
+*.png     binary
+*.zip     binary
+*.parquet binary
+*.pb.gz   binary
