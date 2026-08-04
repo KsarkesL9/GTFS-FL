@@ -32,7 +32,13 @@ RUN pip install --no-cache-dir -e .
 
 # Nie-root. UID jest stały, bo katalog /data jest bind-mountem z hosta i musi
 # mieć zgodnego właściciela - patrz .env.example.
-RUN useradd -u 10001 -m gtfs && mkdir -p /data && chown gtfs:gtfs /data
+#
+# .config/rclone tworzymy JAWNIE. Gdy Docker montuje pojedynczy plik w
+# nieistniejącą ścieżkę, sam dorabia brakujące katalogi i nadaje je rootowi -
+# rclone nie mógłby wtedy zapisać pliku tymczasowego przy odświeżaniu tokenu.
+RUN useradd -u 10001 -m gtfs \
+ && mkdir -p /data /home/gtfs/.config/rclone \
+ && chown -R gtfs:gtfs /data /home/gtfs
 USER gtfs
 
 CMD ["python", "scripts/run_rt_etl.py"]

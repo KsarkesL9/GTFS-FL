@@ -18,11 +18,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    # Dostrojone pod 3,7 GB RAM. Kolektor potrzebuje ~800 MB na cache rozkładu,
+    # więc Postgres nie może brać więcej niż ok. połowy tego, co zostaje.
+    # Przy przesiadce na maszynę 8 GB podnieś shared_buffers do 2GB
+    # i effective_cache_size do 4GB.
     command: >
       postgres
-        -c shared_buffers=1GB
-        -c max_wal_size=2GB
-        -c timescaledb.max_background_workers=8
+        -c shared_buffers=512MB
+        -c effective_cache_size=1GB
+        -c work_mem=16MB
+        -c maintenance_work_mem=128MB
+        -c max_connections=50
+        -c max_wal_size=1GB
+        -c timescaledb.max_background_workers=4
     logging:
       driver: json-file
       options: {max-size: "50m", max-file: "3"}
@@ -53,8 +61,12 @@ services:
     env_file: .env
     volumes:
       - /srv/gtfs/data:/data
-      # Tylko do odczytu - kontener nie ma powodu modyfikować poświadczeń.
-      - ./secrets/rclone.conf:/home/gtfs/.config/rclone/rclone.conf:ro
+      # KATALOG, nie pojedynczy plik. rclone przy odświeżaniu tokenu OAuth
+      # zapisuje config przez rename (nowy plik -> backup starego), a
+      # pojedynczy plik zamontowany bind-mountem jest punktem montowania,
+      # którego nie da się przenieść: "device or resource busy".
+      # Katalog ./secrets musi należeć do UID 10001 (użytkownik z Dockerfile).
+      - ./secrets:/home/gtfs/.config/rclone
     command: supercronic /app/crontab
     logging:
       driver: json-file
