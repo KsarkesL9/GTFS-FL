@@ -1,17 +1,10 @@
 """Monitoring kolektora i łańcucha archiwizacji.
 
-W architekturze, w której dane są kasowane z VPS, cicha awaria jest droższa
-niż głośna. Sprawdzamy cztery rzeczy naraz, bo każda z nich osobno prowadzi
-do tej samej konsekwencji - nieodwracalnej luki w obserwacjach:
+Sprawdza: czy kolektor zapisuje, czy staging nie rośnie, czy jest wolne
+miejsce, czy zadanie nocne domknęło się w ciągu doby.
 
-1. czy kolektor w ogóle zapisuje (rozdz. 7.1: luk nie da się nadrobić),
-2. czy staging nie rośnie, czyli czy wysyłka na Drive działa,
-3. czy jest wolne miejsce - pełny dysk zatrzyma bazę i kolektor naraz,
-4. czy zadanie nocne domknęło się w ciągu doby.
-
-Ping do usługi monitorującej leci TYLKO gdy wszystkie warunki są spełnione.
-Brak pingu jest sygnałem - to odwrócenie odpowiedzialności, dzięki któremu
-awaria samego healthchecka też zostanie zauważona.
+Ping leci TYLKO przy spełnieniu wszystkich warunków - brak pingu jest
+sygnałem, dzięki czemu wykrywalna jest też awaria samego healthchecka.
 """
 
 from __future__ import annotations
@@ -35,7 +28,7 @@ from gtfs_olap.maintenance.nightly import ZNACZNIK
 
 
 def _istniejacy_katalog(p: Path) -> Path:
-    """Najbliższy istniejący przodek - disk_usage wymaga istniejącej ścieżki."""
+    """disk_usage wymaga istniejącej ścieżki."""
     while not p.exists() and p != p.parent:
         p = p.parent
     return p
@@ -58,10 +51,8 @@ def _sprawdz_kolektor() -> str | None:
 
 
 def _wiek_systemu_h() -> float | None:
-    """Ile godzin zbiera ten system, licząc od pierwszego przebiegu ETL.
-
-    Potrzebne, żeby odróżnić 'zadanie nocne padło' od 'zadanie nocne nie
-    było jeszcze wymagalne' - patrz _sprawdz_zadanie_nocne."""
+    """Ile godzin zbiera system - odróżnia 'nocne padło' od 'jeszcze
+    niewymagalne'."""
     try:
         with psycopg.connect(DB_URL, connect_timeout=10) as conn, conn.cursor() as cur:
             cur.execute("SELECT EXTRACT(EPOCH FROM (now() - min(started_at))) "
@@ -103,11 +94,8 @@ def _sprawdz_dysk() -> str | None:
 def _sprawdz_zadanie_nocne() -> str | None:
     znacznik = STATE_DIR / ZNACZNIK
     if not znacznik.exists():
-        # Świeże wdrożenie: zadanie nocne chodzi o 03:30, więc między
-        # uruchomieniem systemu a pierwszą nocą znacznika po prostu nie ma.
-        # Bez tego wyjątku healthcheck alarmowałby nieprzerwanie przez
-        # kilkanaście godzin po wdrożeniu - czyli uczyłby ignorowania
-        # alarmów dokładnie wtedy, gdy system jest najmniej sprawdzony.
+        # Świeże wdrożenie: nocne chodzi o 03:30, więc do pierwszej nocy
+        # znacznika nie ma i alarm byłby fałszywy.
         wiek = _wiek_systemu_h()
         if wiek is not None and wiek < MAX_NIGHTLY_H:
             logger.info(f"Zadanie nocne jeszcze niewymagalne "

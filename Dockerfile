@@ -1,11 +1,7 @@
-# rclone bierzemy z obrazu oficjalnego zamiast pobierać binarkę curl-em -
-# mniej ruchomych części i żadnego zgadywania numeru wersji.
 FROM rclone/rclone:1.68 AS rclone
 
 FROM python:3.12-slim
 
-# Wersja supercronica pinowana świadomie. Bump wymaga sprawdzenia release'u -
-# nieistniejący tag wywali build, co jest zachowaniem pożądanym.
 ARG SUPERCRONIC_VERSION=v0.2.33
 
 ENV PYTHONUNBUFFERED=1 \
@@ -30,12 +26,8 @@ COPY scripts ./scripts
 COPY crontab ./crontab
 RUN pip install --no-cache-dir -e .
 
-# Nie-root. UID jest stały, bo katalog /data jest bind-mountem z hosta i musi
-# mieć zgodnego właściciela - patrz .env.example.
-#
-# .config/rclone tworzymy JAWNIE. Gdy Docker montuje pojedynczy plik w
-# nieistniejącą ścieżkę, sam dorabia brakujące katalogi i nadaje je rootowi -
-# rclone nie mógłby wtedy zapisać pliku tymczasowego przy odświeżaniu tokenu.
+# UID stały, bo /data jest bind-mountem z hosta (patrz .env.example).
+# .config/rclone tworzymy jawnie - Docker dorobiłby go jako root.
 RUN useradd -u 10001 -m gtfs \
  && mkdir -p /data /home/gtfs/.config/rclone \
  && chown -R gtfs:gtfs /data /home/gtfs

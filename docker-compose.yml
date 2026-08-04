@@ -6,9 +6,7 @@ services:
     env_file: .env
     environment:
       TZ: Europe/Warsaw
-    # UWAGA. Bind wyłącznie na pętlę zwrotną. Publikacja na 0.0.0.0 na VPS
-    # z publicznym IP oznacza bazę wystawioną do internetu - dostęp z
-    # laptopa/Power BI robi się tunelem SSH, nie otwartym portem.
+    # Tylko pętla zwrotna - dostęp z zewnątrz przez tunel SSH.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -18,10 +16,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    # Dostrojone pod 3,7 GB RAM. Kolektor potrzebuje ~800 MB na cache rozkładu,
-    # więc Postgres nie może brać więcej niż ok. połowy tego, co zostaje.
-    # Przy przesiadce na maszynę 8 GB podnieś shared_buffers do 2GB
-    # i effective_cache_size do 4GB.
+    # Dostrojone pod 3,7 GB RAM (kolektor bierze ~700 MB na cache rozkładu).
+    # Na maszynie 8 GB: shared_buffers 2GB, effective_cache_size 4GB.
     command: >
       postgres
         -c shared_buffers=512MB
@@ -44,8 +40,7 @@ services:
     env_file: .env
     volumes:
       - /srv/gtfs/data:/data
-    # SIGTERM jest obsłużony w rt.py, ale pętla domyka bieżącą iterację.
-    # Domyślne 10 s bywa za mało, gdy trwa akurat reload cache'u.
+    # Pętla domyka bieżącą iterację; 10 s bywa za mało przy reloadzie cache'u.
     stop_grace_period: 30s
     command: python scripts/run_rt_etl.py
     logging:
@@ -61,17 +56,13 @@ services:
     env_file: .env
     volumes:
       - /srv/gtfs/data:/data
-      # KATALOG, nie pojedynczy plik. rclone przy odświeżaniu tokenu OAuth
-      # zapisuje config przez rename (nowy plik -> backup starego), a
-      # pojedynczy plik zamontowany bind-mountem jest punktem montowania,
-      # którego nie da się przenieść: "device or resource busy".
-      # Katalog ./secrets musi należeć do UID 10001 (użytkownik z Dockerfile).
+      # KATALOG, nie pojedynczy plik: rclone zapisuje odświeżony token przez
+      # rename, a pojedynczy bind-mount pliku daje "device or resource busy".
+      # Katalog musi należeć do UID 10001.
       - ./secrets:/home/gtfs/.config/rclone
-    # Ścieżka BEZWZGLĘDNA, nie samo "supercronic". Jako PID 1 supercronic
-    # włącza reaping procesów potomnych i re-execuje sam siebie - a re-exec
-    # nie przeszukuje PATH. Przy relatywnym argv[0] kończy się to natychmiast
-    # "Failed to fork exec: no such file or directory" i pętlą restartów,
-    # jeszcze przed wczytaniem crontaba.
+    # Ścieżka BEZWZGLĘDNA: jako PID 1 supercronic re-execuje sam siebie przy
+    # włączaniu reapingu, a re-exec nie przeszukuje PATH - relatywne argv[0]
+    # daje "Failed to fork exec" i pętlę restartów.
     command: /usr/local/bin/supercronic /app/crontab
     logging:
       driver: json-file

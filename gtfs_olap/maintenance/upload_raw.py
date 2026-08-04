@@ -1,9 +1,4 @@
-"""Godzinowa wysyłka archiwum surowego na Drive i kasowanie po weryfikacji.
-
-Uruchamiane co godzinę. Katalog godziny strumienia zamyka się sam, gdy
-kolektor przechodzi do następnej - nie trzeba logiki kalendarzowej, wystarczy
-sprawdzić, czy od ostatniego zapisu minęła cisza.
-"""
+"""Wysyłka archiwum surowego na Drive i kasowanie po weryfikacji."""
 
 from __future__ import annotations
 
@@ -26,11 +21,8 @@ def _katalogi_z_plikami(root: Path):
 
 
 def _zamkniety(d: Path, pliki: list[str], cisza_s: float) -> bool:
-    """Katalog jest gotowy do wysyłki, gdy nic w nim nie przybyło od cisza_s.
-
-    Jedna reguła dla wszystkich rodzajów archiwum - godzin strumienia, paczek
-    statycznych, zrzutów lookup_schedule. Katalog bieżącej godziny ciągle
-    dostaje nowe pliki, więc wyklucza się sam."""
+    """Gotowy do wysyłki, gdy nic nie przybyło od cisza_s. Jedna reguła dla
+    wszystkich rodzajów archiwum - bieżąca godzina wyklucza się sama."""
     najnowszy = max((d / f).stat().st_mtime for f in pliki)
     return (time.time() - najnowszy) > cisza_s
 
@@ -57,9 +49,8 @@ def main() -> int:
     wyslane = pominiete = bledy = 0
 
     for d, pliki in _katalogi_z_plikami(RAW_DIR):
-        # Plik .tmp oznacza zapis w toku (kolektor lub static ETL). Wysyłka
-        # takiego katalogu przesłałaby niekompletny plik i - co gorsza -
-        # dałaby podstawę do skasowania oryginału.
+        # .tmp = zapis w toku. Wysyłka dałaby podstawę do skasowania
+        # niekompletnego pliku.
         if any(f.endswith(".tmp") for f in pliki):
             logger.info(f"{d}: trwa zapis (.tmp) - pomijam w tym cyklu")
             pominiete += 1

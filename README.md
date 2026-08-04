@@ -1,272 +1,87 @@
 # GTFS OLAP
 
-Projekt ten to magazyn danych oraz potok ETL stworzony z myślą o przetwarzaniu, składowaniu i analizie rzeczywistych opóźnień komunikacji miejskiej ZTM (Metropolia Śląska). Całość opiera się na dwóch strumieniach danych dostarczanych przez GZM: rozkładach jazdy (GTFS Static) oraz informacjach o pozycji i opóźnieniach pojazdów w czasie rzeczywistym (GTFS Realtime).
+Hurtownia danych i potok ETL dla strumienia GTFS-Realtime ZTM (Metropolia GZM).
+Zbiera opóźnienia komunikacji miejskiej co 20 sekund, składuje w TimescaleDB
+i archiwizuje surowe migawki na Google Drive.
 
-Zamiast prostego skryptu, który po prostu „zrzuca” dane do bazy, wdrożono tu pełnoprawną architekturę hurtowni danych zasilaną przez procesy w Pythonie, składowaną w bazie TimescaleDB (rozszerzenie PostgreSQL dla szeregów czasowych) i wizualizowaną w Power BI oraz Kepler.gl.
+Projekt zasila badania nad federacyjną detekcją anomalii, stąd nacisk na
+ciągłość zbierania i odtwarzalność.
 
----
+## Architektura
 
-## Architektura systemu i przepływ danych
+VPS pracuje jako **przekaźnik, nie magazyn**. Surowe fakty żyją lokalnie 48 godzin,
+trafiają na Drive jako Parquet i dopiero wtedy są kasowane. Agregaty ciągłe
+zostają w bazie przez cały projekt.
 
-Zrozumienie przepływu danych w systemie ułatwia poniższy schemat. Pokazuje on drogę, jaką pokonuje informacja od momentu jej opublikowania przez serwery GZM, aż do prezentacji na wykresach:
+Trzy usługi w `docker compose`:
 
-```mermaid
-graph TD
-    subgraph "Źródła Danych (ZTM/GZM)"
-        CKAN[GZM CKAN API - GTFS Static]
-        RT[GZM GTFS-RT API - Trip Updates]
-    end
+| usługa | rola |
+|---|---|
+| `db` | TimescaleDB, port tylko na pętli zwrotnej |
+| `collector` | pętla RT co 20 s, archiwum surowych migawek |
+| `maintenance` | supercronic: wysyłka co 15 min, zadanie nocne 03:30, static ETL 04:00, healthcheck co 10 min |
 
-    subgraph "Potok ETL w Pythonie"
-        StaticETL[static.py]
-        RT_ETL[rt.py]
-        Cache[("Pamięć podręczna w RAM")]
-    end
+## Model danych
 
-    subgraph "Magazyn Danych (PostgreSQL + TimescaleDB)"
-        dim_linia[(dim_linia)]
-        dim_przystanek[(dim_przystanek)]
-        dim_operator[(dim_operator)]
-        dim_data[(dim_data)]
-        dim_wersja[(dim_wersja_rozkladu)]
-        
-        lookup[(lookup_schedule)]
-        
-        fakt_opoznienia[fakt_opoznienia - Hipertabela]
-        fakt_etl[fakt_etl_run - Hipertabela]
-        
-        CA1[ca_opoznienia_15min]
-        CA2[ca_opoznienia_1h]
-        CA3[ca_opoznienia_dzien]
-        CA4[ca_opoznienia_15min_przystanek]
-    end
+Schemat gwiazdy: hipertabela `fakt_opoznienia` oraz wymiary `dim_linia`,
+`dim_przystanek`, `dim_operator`, `dim_data`, `dim_wersja_rozkladu`.
+`lookup_schedule` trzyma zdenormalizowany rozkład na potrzeby dopasowania w RAM.
+Agregaty ciągłe: `ca_opoznienia_15min`, `_1h`, `_dzien` oraz wariant przystankowy.
+`fakt_etl_run` rejestruje każdy przebieg kolektora.
 
-    subgraph "Prezentacja & Analiza"
-        PBI[Raport Power BI]
-        Kepler[Wizualizacja Kepler.gl]
-    end
+## Decyzje projektowe
 
-    %% Przepływy danych
-    CKAN -->|Pobranie ZIP| StaticETL
-    StaticETL -->|Zasilenie słowników| dim_linia
-    StaticETL -->|Zasilenie słowników| dim_przystanek
-    StaticETL -->|Zasilenie słowników| dim_operator
-    StaticETL -->|Generowanie dat| dim_data
-    StaticETL -->|Dodanie wersji| dim_wersja
-    StaticETL -->|Zapis harmonogramu| lookup
+**Kasowanie warunkowe od wysyłki.** Na faktach nie ma polityki retencji
+TimescaleDB — kasuje `maintenance/nightly.py` przez `drop_chunks`, wyłącznie po
+udanym `rclone check --checksum`. Utraconych migawek GTFS-RT nie da się odtworzyć.
 
-    RT -->|Pobranie Protobuf| RT_ETL
-    lookup -->|Wczytanie na starcie / reload| Cache
-    RT_ETL -->|Szybki lookup w RAM| Cache
-    RT_ETL -->|Bulk COPY / INSERT| fakt_opoznienia
-    RT_ETL -->|Zapis metryk wykonania| fakt_etl
+**Wersjonowanie rozkładu po odcisku treści.** ZTM zmienia rozkłady bardzo często.
+Nowa wersja powstaje tylko przy realnej zmianie (SHA-256 treści), dzięki czemu
+`dim_wersja_rozkladu` pozostaje rejestrem faktycznych zmian, a nie uruchomień crona.
 
-    fakt_opoznienia -->|Ciągła agregacja| CA1
-    CA1 --> CA2
-    CA2 --> CA3
-    fakt_opoznienia -->|Ciągła agregacja| CA4
+**Doba operacyjna.** Kurs o 24:30 jedzie według rozkładu poprzedniego dnia;
+`offset_dnia` przenosi go do właściwej `data_kursu`.
 
-    CA1 & CA2 & CA3 & CA4 & dim_linia & dim_przystanek & dim_operator & dim_data --> PBI
-    fakt_opoznienia & dim_przystanek --> Kepler
-```
+**Cache rozkładu w pamięci.** 1,3 mln wierszy (~700 MB) w słowniku procesu.
+RT publikuje `TripUpdate` bez `stop_id`, więc dopasowanie idzie po
+`(trip_id, stop_sequence)`.
 
----
+**Filtr sensowności opóźnień.** ZTM sporadycznie publikuje wartości rzędu
+195 godzin. Agregaty odrzucają dane spoza zakresu −1 h…+2 h i zliczają je
+w kolumnie `odrzucone`. Surowe fakty zostają nietknięte.
 
-## Model danych (Schemat gwiazdy)
+## Uruchomienie
 
-Baza danych została zaprojektowana w klasycznym modelu gwiazdy. Pozwala to na intuicyjne i szybkie budowanie zapytań analitycznych – tabela faktów przechowuje jedynie liczby i klucze, a opisy znajdują się w tabelach wymiarów.
-
-```mermaid
-erDiagram
-    dim_linia {
-        text linia_id PK
-        text nazwa_krotka
-        text nazwa_dluga
-        text srodek_transportu
-        text typ_linii
-    }
-    dim_przystanek {
-        text przystanek_id PK
-        text nazwa
-        double_precision szer_geo
-        double_precision dl_geo
-        text gmina
-        text miasto
-        text typ_przystanku
-    }
-    dim_operator {
-        text operator_id PK
-        text nazwa
-    }
-    dim_data {
-        date data PK
-        smallint rok
-        smallint miesiac
-        smallint tydzien_iso
-        smallint dzien_tygodnia
-        text nazwa_dnia
-        text typ_dnia
-    }
-    dim_wersja_rozkladu {
-        serial wersja_id PK
-        text nazwa_paczki
-        date obowiazuje_od
-        date obowiazuje_do
-        timestamptz zaladowano
-    }
-    lookup_schedule {
-        int wersja_id PK, FK
-        text trip_id PK
-        text przystanek_id PK
-        int stop_sequence PK
-        text rozkladowy_przyjazd
-        text linia_id
-        text kierunek
-        text kierunek_opis
-        text operator_id
-        smallint offset_dnia
-    }
-    fakt_opoznienia {
-        timestamptz ts PK
-        int wersja_id FK
-        text trip_id PK
-        text przystanek_id PK, FK
-        int stop_sequence PK
-        text linia_id FK
-        text operator_id FK
-        text kierunek
-        date data_kursu FK
-        int opoznienie_s
-        text status
-    }
-    fakt_etl_run {
-        timestamptz started_at PK
-        timestamptz snapshot_ts
-        int obserwacje
-        int wstawione
-        numeric czas_s
-        text status
-        text blad
-    }
-
-    fakt_opoznienia }|--|| dim_linia : "FK linia_id"
-    fakt_opoznienia }|--|| dim_przystanek : "FK przystanek_id"
-    fakt_opoznienia }|--|| dim_operator : "FK operator_id"
-    fakt_opoznienia }|--|| dim_data : "FK data_kursu"
-    fakt_opoznienia }|--|| dim_wersja_rozkladu : "FK wersja_id"
-    lookup_schedule }|--|| dim_wersja_rozkladu : "FK wersja_id"
-```
-
-### Rola poszczególnych tabel
-- **Wymiary (`dim_linia`, `dim_przystanek`, `dim_operator`, `dim_data`)**: Słowniki opisujące rzeczywistość. Wymiar `dim_data` to zasilany z góry kalendarz, który pozwala rozróżnić dni robocze od świąt czy niedziel niehandlowych na podstawie typów usług ZTM.
-- **Wersjonowanie (`dim_wersja_rozkladu`)**: Rejestr paczek rozkładowych. Ponieważ rozkłady na Śląsku zmieniają się bardzo często, każda paczka otrzymuje unikalny klucz, chroniąc historyczne powiązania danych przed zatarciem.
-- **Tabela dopasowań (`lookup_schedule`)**: Tabela techniczna, która przechowuje zdenormalizowany rozkład jazdy na potrzeby szybkiej weryfikacji w locie.
-- **Fakty (`fakt_opoznienia`, `fakt_etl_run`)**: Surowe dane zbierane w czasie rzeczywistym. Druga z tabel służy do monitorowania kondycji samego procesu ETL (czas wykonania pętli, statusy, napotkane błędy). Obie są hipertabelami w TimescaleDB, co pozwala na bezbolesne zarządzanie dużymi zbiorami danych.
-
----
-
-## Wyzwania inżynieryjne i decyzje projektowe
-
-Wytworzenie stabilnego magazynu danych dla transportu publicznego wiąże się z koniecznością rozwiązania problemów, o których rzadko myśli się na początku drogi. Poniżej przedstawiono najważniejsze z nich wraz ze sposobem ich zaadresowania.
-
-### 1. Częste zmiany rozkładów jazdy
-ZTM GZM modyfikuje rozkłady jazdy niezwykle często – potrafią one obowiązywać tylko przez kilka dni (np. na czas objazdów czy świąt). Identyfikatory kursów (`trip_id`) zmieniają wtedy swoje znaczenie lub całkowicie znikają. Gdybyśmy po prostu nadpisywali rozkład w bazie, stare opóźnienia straciłyby powiązanie ze swoimi trasami i operatorami, stając się bezużytecznymi „sierotami”.
-- **Rozwiązanie**: Wdrożono wersjonowanie rozkładów za pomocą tabeli `dim_wersja_rozkladu`. Static ETL przy każdym uruchomieniu pobiera paczki, tworzy nową wersję rozkładu i zapisuje ją w bazie. Nowe fakty są przypisywane do aktywnej wersji, podczas gdy stare rekordy na zawsze pozostają powiązane z wersją historyczną. Dzięki temu raporty historyczne zachowują pełną spójność.
-
-### 2. Doba operacyjna i kursy nocne
-W komunikacji miejskiej doba nie kończy się o 23:59. Autobus, który wyrusza w trasę w piątek o 24:30 (czyli 00:30 w sobotę), jedzie według piątkowego rozkładu jazdy. W danych GTFS godziny te są zapisywane jako wartości powyżej doby – np. `24:30` lub `26:15`. Zwykłe rzutowanie tego czasu na datę kalendarzową przypisałoby ten kurs do soboty, co zepsułoby analizę punktualności.
-- **Rozwiązanie**: Podczas przetwarzania Static ETL wyliczany jest parametr `offset_dnia` (dla godziny 25:30 offset wynosi 1, a godzina w bazie to 01:30). Przy zapisie faktu opóźnienia rzeczywista data kursu (`data_kursu`) jest wyliczana jako `data_obserwacji - offset_dnia`. W ten sposób kurs nocny trafia do właściwego worka analitycznego (piątek), nie mieszając się ze statystykami weekendowymi.
-
-### 3. Szybkie wyszukiwanie trasy w pamięci RAM
-Strumień GTFS-RT (Trip Updates) jest odpytywany w pętli co 20 sekund. Każdy pobrany pakiet niesie około 1000 aktualizacji przystankowych. Chcąc sprawdzić w bazie planowany czas przyjazdu, linię i operatora dla każdego wpisu, musielibyśmy wykonać ponad tysiąc zapytań SQL w każdej iteracji.
-- **Rozwiązanie**: Cały zdenormalizowany rozkład dla aktywnej wersji (ok. 1.4 miliona wierszy, zajmujący ok. 200 MB RAM) jest wczytywany do pamięci słownika Pythona przy uruchomieniu procesu RT ETL. Dzięki temu wyszukiwanie szczegółów kursu odbywa się w czasie O(1) bezpośrednio w pamięci procesu. Dodatkowo proces RT okresowo sprawdza wersję w bazie – jeśli Static ETL wgrał nowy rozkład, cache automatycznie się przeładowuje bez przerywania pętli.
-
-### 4. Wydajny masowy zapis danych
-Wykonywanie pojedynczych operacji `INSERT` dla tysiąca rekordów co 20 sekund szybko doprowadziłoby do zablokowania bazy danych. Dodatkowo ten sam zrzut danych z serwera GZM może zostać pobrany dwukrotnie, co wygenerowałoby błędy klucza głównego.
-- **Rozwiązanie**: Zaimplementowano zapis masowy. Pobierany pakiet jest formatowany jako ciąg znaków CSV w pamięci podręcznej RAM (`io.StringIO`), przesyłany do bazy za pomocą komendy `COPY` do tymczasowej tabeli przejściowej, a następnie scalany z główną tabelą faktów jednym zapytaniem `INSERT INTO ... SELECT ... ON CONFLICT DO NOTHING`. Rozwiązuje to problem wydajności i eliminuje duplikaty.
-
-### 5. Kosztowne obliczenia w locie (Agregaty ciągłe)
-Próba wyliczenia punktualności z milionów surowych wierszy bezpośrednio podczas otwierania raportu Power BI skończyłaby się zawieszeniem narzędzia lub wielominutowym oczekiwaniem.
-- **Rozwiązanie**: Wykorzystano agregaty ciągłe w TimescaleDB. Baza danych automatycznie i przyrostowo przelicza statystyki w tle, zapisując je w oknach 15-minutowych, godzinnych i dziennych. Raport Power BI łączy się tylko z tymi zmaterializowanymi widokami, co pozwala na błyskawiczne renderowanie wykresów.
-
-### 6. Bezpieczeństwo i retencja danych
-- **Klucze obce (FK)**: Relacje między tabelą faktów a słownikami są wymuszane przez silnik PostgreSQL, co gwarantuje spójność i brak "osieroconych" opóźnień.
-- **Polityka usuwania**: Surowe fakty żyją lokalnie 48 godzin, a następnie są usuwane — ale **wyłącznie po potwierdzonym zapisie na Google Drive**. Nie ma tu polityki retencji TimescaleDB: kasuje ona według zegara, niezależnie od tego, czy dane gdziekolwiek dotarły, a utraconych migawek GTFS-RT nie da się odtworzyć. Kasowaniem steruje `maintenance/nightly.py`, dla którego każdy nieudany krok wcześniejszy oznacza pozostawienie danych nietkniętych. Agregaty ciągłe zostają w bazie przez cały projekt.
-
-### 7. Wersjonowanie rozkładu tylko przy realnej zmianie
-Static ETL uruchamiany codziennie tworzył wcześniej nową wersję rozkładu przy każdym przebiegu, dokładając ~1,4 mln wierszy do `lookup_schedule`. Poza kosztem dysku psuło to analizę: `dim_wersja_rozkladu` pełni rolę rejestru **rzeczywistych momentów dryfu**, więc 60 wersji wygenerowanych cronem zamieniłoby te etykiety w szum.
-- **Rozwiązanie**: Treść scalonego rozkładu jest hashowana (SHA-256, niezależnie od kolejności wierszy) i zapisywana w kolumnie `odcisk`. Nowa wersja powstaje tylko wtedy, gdy ZTM faktycznie coś zmienił. Przy okazji znika codzienne, zbędne przeładowanie cache'u w procesie RT.
-
----
-
-## Jak uruchomić projekt
-
-Cała konfiguracja pochodzi ze zmiennych środowiskowych — nie ma już wartości zaszytych w kodzie. Skopiuj `.env.example` do `.env` i uzupełnij; brak wymaganej zmiennej kończy proces od razu przy starcie, celowo, żeby kolektor nigdy nie pisał po cichu w niewłaściwe miejsce.
-
-### Wariant A: wdrożenie na VPS (docelowy)
-
-Trzy usługi w jednym `docker compose`: baza, kolektor i kontener utrzymaniowy z harmonogramem.
-
-1. Katalogi na hoście (`10001` to UID użytkownika z `Dockerfile`):
-   ```bash
-   sudo mkdir -p /srv/gtfs/pgdata /srv/gtfs/data && sudo chown -R 10001:10001 /srv/gtfs/data
-   ```
-2. Konfiguracja rclone do Google Drive. Token wygeneruj **na swoim komputerze** i skopiuj wynik do `secrets/rclone.conf`:
-   ```bash
-   rclone authorize "drive"
-   ```
-3. Start:
-   ```bash
-   cp .env.example .env && docker compose up -d --build
-   ```
-4. Pierwsze zasilenie słowników:
-   ```bash
-   docker compose exec maintenance python scripts/run_static_etl.py
-   ```
-
-Dalej harmonogram (`crontab`) prowadzi się sam: wysyłka archiwum co godzinę, zadanie nocne o 03:30, static ETL o 04:00, healthcheck co 10 minut.
-
-### Wariant B: uruchomienie lokalne (rozwój)
+Na VPS:
 
 ```bash
-docker compose up -d db
-python -m venv .venv && .venv\Scripts\Activate.ps1   # Windows; na Linuksie: source .venv/bin/activate
-pip install -e .
+cp .env.example .env && docker compose up -d --build
 ```
-
-Ustaw co najmniej `GTFS_DB_URL` i `GTFS_RAW_DIR`, po czym:
 
 ```bash
-python scripts/run_static_etl.py
-python scripts/run_rt_etl.py --once
+docker compose run --rm maintenance python scripts/run_static_etl.py
 ```
 
-### Skrypty diagnostyczne
+Lokalnie — nakładka przywraca ścieżki i wolumen z bazą deweloperską:
 
 ```bash
-python scripts/check_dim_data.py
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
 ```
-
-Sprawdza, czy `dim_data.typ_dnia` nie ucierpiał na wcześniejszej wersji UPSERT-a — uruchom przed migracją danych historycznych.
 
 ```bash
-python scripts/inventory_gaps.py
+pip install -e . && python scripts/run_static_etl.py && python scripts/run_rt_etl.py --once
 ```
 
-Inwentaryzuje luki w zbieraniu na podstawie nieciągłości `fakt_etl_run` i zapisuje je do Parquetu (wymaganie rozdz. 14.1 specyfikacji projektu badawczego).
+Konfigurację rclone utwórz przez `rclone authorize "drive"` i skopiuj do
+`secrets/rclone.conf`. Świeży serwer przygotowuje `scripts/bootstrap_vps.sh`.
 
----
+## Skrypty
 
-## Wizualizacja i analiza
-
-Zebrane dane można analizować na dwa sposoby:
-
-### 1. Raport Power BI (`raport_gtfs_olap.pbix`)
-Raport łączy się z bazą danych i pobiera dane z widoków agregacji ciągłej. Pokazuje ogólną punktualność metropolii, średnie opóźnienia wg linii/operatorów oraz najczęściej anulowane kursy.
-
-![Raport Power BI](docs/assets/powerbi_dashboard.png)
-
-### 2. Mapa Kepler.gl (`kepler.gl.html`)
-Interaktywny widok mapy 3D, który pozwala zobaczyć rozkład opóźnień w przestrzeni geograficznej Śląska.
-
-![Mapa Kepler.gl](docs/assets/kepler_map.png)
+| skrypt | do czego |
+|---|---|
+| `run_static_etl.py` | słowniki i `lookup_schedule` z paczek CKAN |
+| `run_rt_etl.py` | pętla RT, `--once` dla pojedynczego cyklu |
+| `audit_data.py` | co łapiemy, co gubimy, sensowność kolumn |
+| `inventory_gaps.py` | luki w zbieraniu na podstawie `fakt_etl_run` |
+| `check_dim_data.py` | diagnostyka `typ_dnia` |
+| `backfill_export.py` | eksport zakresu dat na Drive |

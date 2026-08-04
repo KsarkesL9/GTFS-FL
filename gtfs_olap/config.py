@@ -4,10 +4,6 @@ from zoneinfo import ZoneInfo
 
 
 def _require(name: str) -> str:
-    """Zmienna obowiązkowa - brak kończy proces od razu, przy imporcie.
-
-    Celowo bez fallbacku na localhost. Na VPS cichy fallback oznaczałby
-    kolektor piszący w próżnię - czyli lukę w danych wykrytą po dniach."""
     val = os.getenv(name)
     if not val:
         raise RuntimeError(
@@ -29,11 +25,7 @@ RT_URL = os.getenv(
     "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/tripUpdates",
 )
 
-# UWAGA. vehiclePositions jest wyłącznie ARCHIWIZOWANY, nigdy parsowany do
-# bazy. Decyzja D1 specyfikacji wyklucza cechy prędkościowe z powodu kosztu
-# przetwarzania, ale strumień GTFS-RT jest ulotny - jeśli nie zapiszemy go
-# teraz, kierunek dalszych prac z rozdz. 6.2 jest trwale zamknięty dla tego
-# okna czasowego. Zapis bajtów kosztuje tyle co nic.
+# Wyłącznie archiwizowany, nigdy parsowany do bazy (decyzja D1).
 VP_URL = os.getenv(
     "GTFS_VP_URL",
     "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/vehiclePositions",
@@ -48,22 +40,16 @@ RAW_DIR = Path(os.getenv("GTFS_RAW_DIR", "/data/raw"))
 EXPORT_DIR = Path(os.getenv("GTFS_EXPORT_DIR", "/data/export"))
 STATE_DIR = Path(os.getenv("GTFS_STATE_DIR", "/data/state"))
 
-# --- archiwizacja na Google Drive ---
 RCLONE_BIN = os.getenv("GTFS_RCLONE_BIN", "rclone")
 RCLONE_REMOTE = os.getenv("GTFS_RCLONE_REMOTE", "gdrive:gtfs-olap")
 
-# Katalog uznajemy za zamknięty i gotowy do wysyłki, gdy nic w nim nie
-# przybyło od tylu minut. Wyklucza to katalog bieżącej godziny bez osobnej
-# logiki kalendarzowej.
+# Katalog gotowy do wysyłki, gdy nic w nim nie przybyło od tylu minut.
 UPLOAD_QUIET_MIN = int(os.getenv("GTFS_UPLOAD_QUIET_MIN", "10"))
 
-# UWAGA. 48h, nie 24h. Zadanie nocne eksportuje całą dobę D-1; przy 24h
-# najstarsze wiersze tej doby miałyby w chwili eksportu 27h i zdążyłyby
-# zniknąć. Druga doba to zapas na jedną nieudaną noc (awaria Drive'a).
-# To okno MUSI być dłuższe niż start_offset agregatów z CA.sql (6h).
+# MUSI być większe niż start_offset agregatów w CA.sql (6h) i pokrywać całą
+# eksportowaną dobę D-1. Skrócenie poniżej start_offset kasuje agregaty.
 FAKTY_RETENCJA_H = int(os.getenv("GTFS_FAKTY_RETENCJA_H", "48"))
 
-# --- monitoring ---
 HEALTHCHECK_URL = os.getenv("GTFS_HEALTHCHECK_URL", "")
 MIN_FREE_GB = float(os.getenv("GTFS_MIN_FREE_GB", "15"))
 MAX_ETL_CISZA_MIN = float(os.getenv("GTFS_MAX_ETL_CISZA_MIN", "5"))
@@ -82,13 +68,9 @@ WEEKDAY_COLS = ["monday", "tuesday", "wednesday", "thursday",
 
 DIM_DATA_LOOKBACK_DAYS = 35
 
-# UWAGA. Klucze dedup dla scalania paczek GZM. Większość tabel ma normalny
-# klucz biznesowy ALE calendar i service_ext są popsute - GZM używa tych
-# samych liczb service_id w różnych paczkach do oznaczenia zupełnie różnych
-# rzeczy (każda paczka ma swój własny zakres dat dla każdego ID). Dlatego
-# klucz dedup MUSI obejmować pełen rekord nie tylko service_id - inaczej
-# tracimy 7 z 10 wpisów kalendarza i 18 z 21 dni w dim_data zostaje "brak
-# rozkładu". Sprawdzone empirycznie.
+# GZM używa tych samych service_id w różnych paczkach do oznaczenia różnych
+# rzeczy, więc klucz dedup dla calendar i service_ext musi obejmować pełen
+# rekord. Inaczej tracimy 7 z 10 wpisów kalendarza.
 DEDUP_KEYS = {
     "agency": ["agency_id"],
     "routes": ["route_id"],

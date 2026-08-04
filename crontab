@@ -1,16 +1,10 @@
 # Harmonogram dla supercronica (5 pól, czas kontenera = Europe/Warsaw).
 #
-# Kolejność w ciągu nocy jest celowa:
-#   03:30 zadanie nocne - eksport doby D-1, wysyłka, dopiero potem kasowanie
-#   04:00 static ETL    - po eksporcie, żeby nowa wersja rozkładu i wywołany
-#                         nią reload cache'u nie wpadły w środek eksportu
+# static ETL po zadaniu nocnym, żeby reload cache'u nie wpadł w środek eksportu.
 #
-# UWAGA na zestrojenie z GTFS_UPLOAD_QUIET_MIN (domyślnie 10 min). Katalog
-# godziny zamyka się o pełnej godzinie, więc uruchomienie o :05 zastawałoby go
-# z zaledwie 5 minutami ciszy - poniżej progu - i odkładało wysyłkę o całą
-# godzinę. Co 15 minut daje pierwszą realną szansę o :15 (15 min ciszy,
-# komfortowo powyżej progu) i trzy kolejne podejścia w tej samej godzinie,
-# gdyby Drive akurat nie odpowiadał.
+# Wysyłka co 15 min, nie co godzinę: katalog godziny zamyka się o pełnej
+# godzinie, więc przy GTFS_UPLOAD_QUIET_MIN=10 uruchomienie o :05 zastawałoby
+# go poniżej progu ciszy i odkładało wysyłkę o kolejną godzinę.
 #
 # min  godz  dzień  mies  dzieńTyg  polecenie
 */15   *     *      *     *         python -m gtfs_olap.maintenance.upload_raw

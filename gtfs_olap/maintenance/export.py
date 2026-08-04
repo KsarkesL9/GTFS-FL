@@ -1,9 +1,7 @@
-"""Eksport danych z TimescaleDB do plików Parquet.
+"""Eksport z TimescaleDB do Parquetu.
 
-Pełni dwie role naraz:
-1. Jest warunkiem bezpiecznego skasowania surowych faktów z VPS.
-2. Jest interfejsem do części uczeniowej (decyzja D3 specyfikacji - Flower,
-   PyTorch i River pracują wyłącznie na plikach, bez zależności od bazy).
+Warunek bezpiecznego skasowania surowych faktów z VPS i jednocześnie interfejs
+do części uczeniowej, która pracuje wyłącznie na plikach (decyzja D3).
 """
 
 from __future__ import annotations
@@ -18,9 +16,8 @@ from loguru import logger
 
 from gtfs_olap.config import DB_URL, EXPORT_DIR, TZ
 
-# Schemat jawny, nie wnioskowany. Przy zapisie strumieniowym każda partia
-# musi mieć identyczny schemat, a wnioskowanie z partii, w której jakaś
-# kolumna jest w całości NULL-em, dałoby niezgodny typ i wywrócenie zapisu.
+# Schemat jawny: przy zapisie strumieniowym partia z kolumną w całości NULL
+# dałaby wnioskowany typ niezgodny z resztą.
 FAKTY_SCHEMA = pa.schema([
     ("ts", pa.timestamp("us", tz="UTC")),
     ("wersja_id", pa.int32()),
@@ -39,21 +36,17 @@ _PARTIA = 100_000
 
 
 def _granice_doby(dzien: date) -> tuple[datetime, datetime]:
-    """Doba kalendarzowa w czasie lokalnym, nie w UTC.
-
-    Kolumna ts jest w UTC, ale doba operacyjna projektu jest warszawska -
-    granice liczone w UTC rozjechałyby się z agregatami, które używają
-    time_bucket(..., 'Europe/Warsaw')."""
+    """Doba w czasie lokalnym - granice w UTC rozjechałyby się z agregatami,
+    które używają time_bucket(..., 'Europe/Warsaw')."""
     od = datetime.combine(dzien, dtime.min, tzinfo=TZ)
     return od, od + timedelta(days=1)
 
 
 def eksport_faktow(dzien: date) -> Path | None:
-    """Zrzuca dobę surowych faktów do jednego pliku Parquet.
+    """Doba surowych faktów do jednego pliku Parquet.
 
-    Czyta partiami przez kursor serwerowy: doba to ~4,3 mln wierszy, a proces
-    działa na VPS obok kolektora, który sam trzyma ~1 GB cache'u rozkładu.
-    Wczytanie całości do pamięci wywróciłoby maszynę."""
+    Partiami przez kursor serwerowy - doba to ~4,8 mln wierszy, a obok działa
+    kolektor z ~700 MB cache'u."""
     od, do = _granice_doby(dzien)
     out_dir = EXPORT_DIR / "fakty" / f"dt={dzien:%Y-%m-%d}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -106,9 +99,7 @@ def eksport_faktow(dzien: date) -> Path | None:
 
 
 def _eksport_maly(sql: str, params: tuple, out: Path, opis: str) -> Path | None:
-    """Eksport małej tabeli w całości. Tylko dla agregatów i logów.
-
-    Świadomie NIE używane dla fakt_opoznienia - patrz eksport_faktow."""
+    """Eksport małej tabeli w całości - nie dla fakt_opoznienia."""
     import pandas as pd
 
     with psycopg.connect(DB_URL) as conn, conn.cursor() as cur:
@@ -130,10 +121,7 @@ def _eksport_maly(sql: str, params: tuple, out: Path, opis: str) -> Path | None:
 
 
 def eksport_agregatu(dzien: date) -> Path | None:
-    """Agregat 15-minutowy za dobę - bezpośrednie źródło wektora cech (rozdz. 8).
-
-    Zostaje też w bazie na cały projekt; kopia na Drive jest zabezpieczeniem
-    i wejściem dla części uczeniowej działającej poza VPS-em."""
+    """Agregat 15-minutowy - bezpośrednie źródło wektora cech."""
     od, do = _granice_doby(dzien)
     return _eksport_maly(
         "SELECT * FROM ca_opoznienia_15min "
@@ -146,11 +134,8 @@ def eksport_agregatu(dzien: date) -> Path | None:
 
 
 def eksport_etl_run(dzien: date) -> Path | None:
-    """Rejestr przebiegów kolektora - jedyne źródło inwentaryzacji luk.
-
-    Luka objawia się BRAKIEM wierszy, a nie wierszem ze statusem ERROR
-    (gdy proces nie żyje, nie ma kto zapisać błędu), więc ciągłość tego
-    strumienia jest sama w sobie daną badawczą - rozdz. 4.2."""
+    """Rejestr przebiegów - jedyne źródło inwentaryzacji luk. Luka objawia się
+    BRAKIEM wierszy, nie statusem ERROR."""
     od, do = _granice_doby(dzien)
     return _eksport_maly(
         "SELECT * FROM fakt_etl_run "
@@ -163,7 +148,7 @@ def eksport_etl_run(dzien: date) -> Path | None:
 
 
 def eksport_wymiarow() -> list[Path]:
-    """Wymiary w całości. Małe, zmieniają się rzadko, nadpisujemy co noc."""
+    """Wymiary w całości - małe, nadpisywane co noc."""
     out = []
     for tabela in ("dim_linia", "dim_przystanek", "dim_operator",
                    "dim_data", "dim_wersja_rozkladu"):

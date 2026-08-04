@@ -1,13 +1,8 @@
-"""Inwentaryzacja luk w zbieraniu danych (rozdz. 4.2 i 14.1 specyfikacji).
+"""Inwentaryzacja luk w zbieraniu danych.
 
-UWAGA METODOLOGICZNA. Luki wykrywa się przez NIECIĄGŁOŚĆ w started_at, a nie
-przez filtrowanie status = 'ERROR'. Gdy proces kolektora nie żyje, nie ma kto
-zapisać wiersza o błędzie - luka objawia się BRAKIEM wierszy. Filtr po statusie
-pokazałby wyłącznie awarie strumienia ZTM przy działającym kolektorze, czyli
-mniejszą część problemu.
-
-Wynik jest wejściem dla reguły "sekwencje przecinające lukę są odrzucane"
-z rozdz. 4.2.
+Luki wykrywa się przez nieciągłość started_at, a NIE przez status = 'ERROR':
+gdy proces nie żyje, nie ma kto zapisać wiersza o błędzie, więc luka objawia
+się brakiem wierszy.
 
     python scripts/inventory_gaps.py                 # próg 2 minuty
     python scripts/inventory_gaps.py --prog-min 5

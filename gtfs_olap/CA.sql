@@ -1,16 +1,11 @@
--- ============================================================================
--- Migracja definicji agregatów
--- ============================================================================
+-- Migracja definicji agregatów.
 --
--- CREATE MATERIALIZED VIEW IF NOT EXISTS po cichu POMIJA zmienioną definicję,
--- jeśli widok już istnieje. Bez tego bloku każda zmiana poniższych zapytań
--- działałaby tylko na świeżej bazie, a na działającej maszynie byłaby
--- niewidoczna - i nikt by się nie zorientował.
+-- CREATE MATERIALIZED VIEW IF NOT EXISTS po cichu pomija zmienioną definicję,
+-- więc bez tego bloku zmiany poniższych zapytań nie dotarłyby na działającą bazę.
 --
--- !!! UWAGA. Podniesienie WERSJI_AGREGATOW KASUJE zmaterializowaną historię
--- wszystkich agregatów. Przy retencji surowych faktów 48 h odtworzenie
--- czegokolwiek starszego wymaga przeliczenia Parquetów z Google Drive poza
--- bazą. Podnoś świadomie i najlepiej wcześnie w cyklu życia projektu.
+-- UWAGA: podniesienie wersji KASUJE zmaterializowaną historię agregatów.
+-- Przy retencji faktów 48 h odtworzenie jej wymaga przeliczenia Parquetów
+-- z Drive poza bazą.
 DO $migracja$
 DECLARE
     wersja_docelowa INT := 2;   -- 2: filtr sensowności opóźnień (-1h/+2h)
@@ -40,24 +35,13 @@ END
 $migracja$;
 
 
--- ============================================================================
--- Agregat bazowy: okno 15 minut na linię i operatora
--- ============================================================================
+-- Agregat bazowy: okno 15 minut na linię i operatora.
 --
--- FILTR SENSOWNOŚCI: opoznienie_s BETWEEN -3600 AND 7200.
--- ZTM publikuje sporadycznie wartości rzędu 195-196 godzin (zweryfikowane
--- skryptem audit_data.py: 3 różne kursy, wszystkie skupione wokół 8,15 doby -
--- to artefakt źródła, nie błąd potoku). Jeden taki wiersz w oknie z ~1000
--- obserwacji przesuwa średnie opóźnienie o ~700 s, podczas gdy amplitudy
--- anomalii A1 z rozdz. 10 to 60-300 s. Nieodfiltrowany artefakt wyglądałby
--- więc jak anomalia kilkukrotnie silniejsza od tych, które model ma wykrywać,
--- i zaburzałby kalibrację progu percentylowego z rozdz. 8.1.
---
--- Filtr obejmuje też licznik obserwacji, żeby suma i mianownik liczyły się na
--- tym samym zbiorze - inaczej d(t) = suma/obserwacje byłoby niespójne.
--- Kolumna odrzucone czyni filtrowanie jawnym i policzalnym w raporcie.
--- Surowe fakty i archiwum na Drive pozostają nietknięte, więc próg da się
--- zrewidować bez utraty danych.
+-- Filtr sensowności -3600..7200 s: ZTM publikuje sporadycznie opóźnienia rzędu
+-- 195 godzin. Jeden taki wiersz przesuwa średnią w oknie o ~700 s, czyli
+-- kilkukrotnie więcej niż amplituda anomalii, którą model ma wykrywać.
+-- Filtr obejmuje też licznik, żeby suma i mianownik liczyły się na tym samym
+-- zbiorze. Kolumna odrzucone czyni filtrowanie policzalnym.
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_15min
 WITH (timescaledb.continuous) AS
 SELECT
@@ -77,9 +61,6 @@ SELECT
                               AND opoznienie_s BETWEEN -3600 AND 7200) AS min_opoznienie,
     MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
                               AND opoznienie_s BETWEEN -3600 AND 7200) AS max_opoznienie,
-    -- Jawny ślad filtrowania: ile obserwacji wypadło poza próg sensowności.
-    -- Bez tej kolumny odrzucanie byłoby niewidoczne, a w pracy badawczej
-    -- każde odrzucenie danych musi dać się policzyć i opisać.
     COUNT(*) FILTER (WHERE status = 'OBSERWACJA'
                      AND (opoznienie_s < -3600 OR opoznienie_s > 7200)) AS odrzucone,
     -- Liczniki zdarzeń:
@@ -89,14 +70,9 @@ FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, linia_id, operator_id
 WITH NO DATA;
 
--- UWAGA. start_offset MUSI być krótszy niż okno retencji surowych faktów
--- (48h, patrz maintenance/nightly.py). Odświeżenie agregatu przelicza kubełki
--- z surowych danych - jeśli okno sięga poza retencję, przeliczy je z pustki
--- i SKASUJE poprawne, zmaterializowane wiersze. Przy 6h mamy 8x zapasu.
---
--- remove_* przed add_*, bo add_continuous_aggregate_policy(if_not_exists=>true)
--- przy istniejącej polityce o INNEJ konfiguracji nie zmienia jej - wypisuje
--- warning i wychodzi. Sama zmiana wartości w tym pliku by nie zadziałała.
+-- start_offset MUSI być krótszy niż retencja surowych faktów (48h): odświeżenie
+-- zakresu bez surowych danych przelicza kubełki z pustki i kasuje poprawne wiersze.
+-- remove_* przed add_*, bo add_*(if_not_exists=>true) nie zmienia istniejącej polityki.
 SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min',
     if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min',
@@ -182,8 +158,7 @@ SELECT
 FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, przystanek_id, linia_id
 WITH NO DATA;
--- start_offset jak wyżej - czyta bezpośrednio z fakt_opoznienia, więc podlega
--- temu samemu ograniczeniu retencji.
+-- Czyta bezpośrednio z fakt_opoznienia, więc podlega temu samemu ograniczeniu.
 SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
     if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
@@ -191,36 +166,23 @@ SELECT add_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
     end_offset        => INTERVAL '10 minutes',
     schedule_interval => INTERVAL '5 minutes');
 
--- ============================================================================
--- Retencja
--- ============================================================================
+-- Retencja.
 --
--- UWAGA. Na fakt_opoznienia i fakt_etl_run NIE MA polityki retencji i nie
--- wolno jej dodawać. Polityka kasuje ślepo, według zegara. W architekturze
--- "VPS jako przekaźnik" surowe fakty żyją lokalnie tylko do czasu wysłania
--- na Drive, a jedyne bezpieczne kasowanie to takie, które nastąpi PO
--- potwierdzonej weryfikacji uploadu. Robi to maintenance/nightly.py przez
--- jawne drop_chunks(). Awaria Drive'a na dwie doby + ślepa retencja =
--- nieodwracalna utrata danych, których rozdz. 7.1 specyfikacji nie pozwala
--- odtworzyć.
+-- Na fakt_opoznienia i fakt_etl_run NIE WOLNO dodawać polityki retencji -
+-- kasuje ślepo, według zegara, niezależnie od tego, czy dane dotarły na Drive.
+-- Kasowaniem steruje maintenance/nightly.py jawnym drop_chunks() po
+-- zweryfikowanym uploadzie. Poniższe remove_* usuwają polityki 30/90-dniowe
+-- z wcześniejszych wersji tego pliku.
 --
--- Poniższe remove_* są celowe: usuwają polityki 30/90-dniowe założone przez
--- wcześniejsze wersje tego pliku. Samo skasowanie linii add_* nie usunęłoby
--- polityki już zainstalowanej w bazie.
---
--- (remove_retention_policy używa if_exists, a remove_continuous_aggregate_policy
---  if_not_exists - to niespójność w API TimescaleDB, nie literówka.)
+-- (remove_retention_policy używa if_exists, remove_continuous_aggregate_policy
+--  if_not_exists - to niespójność API TimescaleDB, nie literówka.)
 SELECT remove_retention_policy('fakt_opoznienia', if_exists => true);
 SELECT remove_retention_policy('fakt_etl_run', if_exists => true);
 
--- Agregat przystankowy zasila wyłącznie Kepler/Power BI, nie jest wejściem
--- modelu (rozdz. 4.1 wskazuje ca_opoznienia_15min). Jest ~10x większy od
--- niego, więc tu ślepa retencja jest i bezpieczna, i pożądana - dane są
--- odtwarzalne z Parquetów na Drive.
+-- Agregat przystankowy zasila tylko wizualizacje, nie jest wejściem modelu,
+-- a jest ~10x większy od 15-minutowego. Tu ślepa retencja jest bezpieczna.
 SELECT remove_retention_policy('ca_opoznienia_15min_przystanek', if_exists => true);
 SELECT add_retention_policy('ca_opoznienia_15min_przystanek', INTERVAL '14 days');
 
--- ca_opoznienia_15min, _1h i _dzien zostają bez retencji przez cały projekt.
--- Razem to ~300 MB i jest to bezpośrednie źródło wektora cech z rozdz. 8.
--- _1h i _dzien czytają z _15min, a nie z surowych faktów, więc ich
--- start_offset (14 i 60 dni) jest bezpieczny mimo retencji 48h na faktach.
+-- _15min, _1h i _dzien zostają bez retencji - razem ~300 MB, a to bezpośrednie
+-- źródło wektora cech. _1h i _dzien czytają z _15min, nie z surowych faktów.

@@ -1,8 +1,4 @@
-"""Cienka warstwa nad rclone.
-
-Jedyny sposób, w jaki reszta modułu dowiaduje się, że dane są bezpieczne na
-Drive - i tym samym jedyna bramka przed kasowaniem czegokolwiek lokalnie.
-"""
+"""Cienka warstwa nad rclone - jedyna bramka przed kasowaniem danych lokalnie."""
 
 from __future__ import annotations
 
@@ -13,8 +9,7 @@ from loguru import logger
 
 from gtfs_olap.config import RCLONE_BIN, RCLONE_REMOTE
 
-# Ustawienia dobrane pod Google Drive: chunk 64M ogranicza liczbę żądań,
-# low-level-retries łagodzi typowe dla Drive'a błędy 403 rate limit.
+# Pod Google Drive: chunk 64M ogranicza liczbę żądań, retries łagodzą 403.
 _OPCJE_COPY = [
     "--transfers=4",
     "--checkers=8",
@@ -31,17 +26,11 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def wyslij_i_zweryfikuj(lokalny: Path, podkatalog: str) -> bool:
-    """Wysyła katalog na Drive i potwierdza zgodność sumami kontrolnymi.
+    """Wysyła katalog i potwierdza zgodność sumami kontrolnymi.
 
-    Zwraca True dopiero po udanym `rclone check --checksum`. Kod wyjścia
-    samego `copy` NIE wystarcza jako podstawa do kasowania: copy potrafi
-    zakończyć się zerem przy częściowo przesłanych plikach, a to jest
-    dokładnie ta decyzja, której nie wolno pomylić.
-
-    --one-way, bo zdalny katalog może zawierać więcej niż lokalny (np. po
-    wcześniejszym, częściowo skasowanym cyklu) - interesuje nas wyłącznie,
-    czy wszystko co lokalne ma odpowiednik zdalny.
-    """
+    True dopiero po udanym `rclone check`. Kod wyjścia samego `copy` nie
+    wystarcza jako podstawa do kasowania. --one-way, bo zdalny katalog może
+    zawierać więcej niż lokalny."""
     cel = f"{RCLONE_REMOTE}/{podkatalog}"
 
     cp = _run(["copy", str(lokalny), cel, *_OPCJE_COPY])

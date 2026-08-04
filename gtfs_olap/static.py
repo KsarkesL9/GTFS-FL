@@ -33,27 +33,14 @@ class FeedMeta:
     feed_end_date: date
 
 
-# ============================================================================
-# Pobieranie paczek
-# ============================================================================
-#
-# UWAGA. Z CKAN GZM trzeba ściągnąć WSZYSTKIE paczki które razem pokrywają
-# dzień dzisiejszy + 14 dni do przodu. Nie da się tego zrobić "wybierz najnowszą
-# paczkę i już" bo:
-# 1. Numer sekwencyjny w nazwie ZIP-a NIE odpowiada datom obowiązywania.
-#    Najnowsza paczka (najwyższy numer) może obowiązywać dopiero za 2 tygodnie.
-# 2. Każda paczka pokrywa tylko WYCINEK kalendarza (1-10 dni). Żeby mieć pełen
-#    rozkład na 14 dni trzeba scalić 7-9 paczek.
-# 3. Prawdziwy okres obowiązywania jest tylko w feed_info.txt WEWNĄTRZ ZIP-a.
-#    Z nazwy pliku tego nie da się wyczytać.
-# Rozwiązanie: ściągamy wszystko po kolei, sprawdzamy okres,
-# zbieramy aż pokryjemy 14 dni. Zazwyczaj 7-9 paczek po ~10 MB.
+# Numer w nazwie ZIP-a nie odpowiada datom obowiązywania, a każda paczka
+# pokrywa tylko wycinek kalendarza (1-10 dni) - rzeczywisty okres jest wyłącznie
+# w feed_info.txt wewnątrz archiwum. Stąd: ściągamy kolejno i sprawdzamy okres,
+# aż pokryjemy horyzont. Zwykle 7-9 paczek po ~10 MB.
 
 def _fetch_active_packages(dest: Path, horizon_days: int = 14) -> list[Path]:
     """Pobiera paczki pokrywające okres [dziś, dziś + horizon_days]."""
-    # datetime.now(TZ), nie date.today() - VPS stoi na UTC, więc między 23:00
-    # a 00:00 czasu warszawskiego date.today() zwróciłoby poprzedni dzień
-    # i przesunęło okno wyboru paczek o dobę.
+    # Nie date.today() - VPS stoi na UTC i po 23:00 zwróciłoby poprzedni dzień.
     today = datetime.now(TZ).date()
     target_days = {today + timedelta(days=i) for i in range(horizon_days)}
 
@@ -276,13 +263,8 @@ def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str
                set_overrides: dict[str, str] | None = None):
     """COPY do tabeli tymczasowej, potem INSERT ... ON CONFLICT (pk) DO UPDATE.
 
-    TRUNCATE jest niemożliwe odkąd fakt_opoznienia ma FK do wymiarów - usunęłoby
-    referencje istniejących faktów. UPSERT pozwala bezpiecznie re-runować static
-    ETL i naturalnie kumuluje historię w dim_data.
-
-    set_overrides pozwala podmienić wyrażenie po prawej stronie SET dla wybranej
-    kolumny - patrz dim_data w _load_to_db, gdzie domyślne EXCLUDED.typ_dnia
-    niszczyłoby dane historyczne."""
+    TRUNCATE odpada, bo fakt_opoznienia ma FK do wymiarów. set_overrides
+    podmienia wyrażenie po prawej stronie SET dla wybranej kolumny."""
     set_overrides = set_overrides or {}
     stg = f"_stg_{table}"
     assignments = []
@@ -311,11 +293,8 @@ LOOKUP_COLS = ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
 def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
     """SHA-256 treści rozkładu, niezależny od kolejności wierszy.
 
-    Bez tego każde uruchomienie static ETL tworzyło nową wersję i dokładało
-    1,4 mln wierszy do lookup_schedule, nawet gdy ZTM nic nie zmienił. Poza
-    kosztem dysku psuło to rozdz. 4.1 specyfikacji, która traktuje każdą
-    zmianę dim_wersja_rozkladu jako oznaczonego kandydata na dryf - codzienny
-    cron zamieniłby te etykiety w 60 sztuk szumu."""
+    Nowa wersja powstaje tylko przy realnej zmianie: dim_wersja_rozkladu pełni
+    rolę rejestru momentów dryfu, więc wersje generowane cronem byłyby szumem."""
     cols = [c for c in LOOKUP_COLS if c != "wersja_id"]
     ordered = lookup[cols].sort_values(cols, kind="mergesort")
     return hashlib.sha256(
@@ -324,12 +303,8 @@ def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
 
 
 def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
-    """Zrzuca lookup_schedule nowej wersji do Parquetu w archiwum surowym.
-
-    Kryterium K4 wymaga odtwarzalności eksperymentów z archiwum. Bez tego
-    zrzutu nie da się później odtworzyć mapowania kurs -> operator z danego
-    momentu, czyli podziału na klientów federacji - a lookup_schedule jest
-    kasowany z VPS, gdy wersja przestaje być aktywna."""
+    """Zrzut lookup_schedule do archiwum - bez niego nie odtworzysz mapowania
+    kurs -> operator z danego momentu po skasowaniu wersji z bazy."""
     dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
     dest.mkdir(parents=True, exist_ok=True)
     out = dest / f"lookup_schedule_w{wersja_id}.parquet"
@@ -340,11 +315,8 @@ def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
 
 
 def _archive_packages(zip_paths: list[Path], dzien: date):
-    """Kopiuje pobrane paczki GTFS do archiwum surowego.
-
-    CKAN GZM rotuje zasoby - paczki sprzed kilku tygodni znikają z platformy.
-    Bez nich nie odtworzysz ani lookup_schedule z danego momentu, ani podziału
-    na klientów federacji, więc kryterium K4 byłoby nieosiągalne."""
+    """Kopiuje paczki do archiwum - CKAN GZM rotuje zasoby i po kilku
+    tygodniach znikają z platformy."""
     dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
     dest.mkdir(parents=True, exist_ok=True)
     skopiowane = 0
@@ -360,11 +332,8 @@ def _archive_packages(zip_paths: list[Path], dzien: date):
 
 
 def _prune_lookup_schedule(conn, aktywna_wersja: int):
-    """Usuwa wiersze lookup_schedule wersji, które nie są już potrzebne.
-
-    Zostaje wersja aktywna (ładuje ją cache RT przy każdym starcie) oraz
-    każda, do której odwołują się fakty w oknie retencji. Treść usuwanych
-    wersji jest już w Parquecie na Drive, więc odtwarzalność nie cierpi."""
+    """Zostawia wersję aktywną (ładuje ją cache RT) i te, do których odwołują
+    się fakty w oknie retencji. Reszta jest już w Parquecie na Drive."""
     with conn.cursor() as cur:
         cur.execute("""
             DELETE FROM lookup_schedule
@@ -428,14 +397,9 @@ def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
                    ["operator_id", "nazwa"],
                    ["operator_id"])
 
-        # UWAGA. typ_dnia jest wyliczany z calendar pobranych paczek, które
-        # pokrywają tylko [dziś, dziś+13]. Dla dat przeszłych z okna
-        # DIM_DATA_LOOKBACK_DAYS mask jest pusty i _build_dim_data zwraca
-        # 'brak rozkładu'. Domyślne EXCLUDED.typ_dnia nadpisywałoby tym
-        # śmieciem poprawne wartości zapisane, gdy ta data była jeszcze
-        # przyszłością - czyli po kilku uruchomieniach CAŁA historia
-        # dim_data stawała się 'brak rozkładu'. A typ_dnia jest wprost
-        # potrzebny do cechy r(t) z rozdz. 8 specyfikacji.
+        # NIE upraszczać do EXCLUDED.typ_dnia. Paczki pokrywają tylko
+        # [dziś, dziś+13], więc dla dat przeszłych _build_dim_data zwraca
+        # 'brak rozkładu' - bezwarunkowy UPSERT nadpisywałby tym całą historię.
         _upsert_df(conn, "dim_data", dims["data"],
                    ["data", "rok", "miesiac", "tydzien_iso", "dzien_tygodnia", "nazwa_dnia", "typ_dnia"],
                    ["data"],
@@ -453,9 +417,8 @@ def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
         _prune_lookup_schedule(conn, wersja_id)
         conn.commit()
 
-    # Agregaty ciągłe muszą być w autocommit - TimescaleDB blokuje CREATE
-    # MATERIALIZED VIEW continuous wewnątrz explicit transaction. CA.sql jest
-    # idempotentny, więc bezpiecznie odpala się przy każdym static ETL.
+    # Autocommit wymagany: TimescaleDB blokuje CREATE MATERIALIZED VIEW
+    # continuous wewnątrz jawnej transakcji. CA.sql jest idempotentny.
     with psycopg.connect(DB_URL, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(CA_DDL)

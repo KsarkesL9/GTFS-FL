@@ -1,11 +1,8 @@
-"""Zadanie nocne: odśwież agregaty → wyeksportuj → wyślij → zweryfikuj →
-dopiero wtedy skasuj surowe fakty.
+"""Zadanie nocne: odśwież agregaty → eksport → wysyłka → weryfikacja →
+dopiero wtedy kasowanie surowych faktów.
 
-KOLEJNOŚĆ JEST ISTOTNA I NIE WOLNO JEJ ZMIENIAĆ. Kasowanie jest ostatnie
-i warunkowe. Każdy wcześniejszy krok, który się nie powiedzie, przerywa
-zadanie z niezerowym kodem i zostawia dane nietknięte - dysk urośnie,
-a healthcheck to zgłosi. Odwrotna kolejność raz w miesiącu kosztowałaby
-dobę obserwacji, której rozdz. 7.1 specyfikacji nie pozwala odtworzyć.
+KOLEJNOŚCI NIE WOLNO ZMIENIAĆ. Każdy nieudany krok przerywa zadanie i zostawia
+dane nietknięte.
 """
 
 from __future__ import annotations
@@ -29,13 +26,9 @@ ZNACZNIK = "nightly_ok"
 def _odswiez_agregaty(dzien) -> None:
     """Materializuje agregaty za eksportowaną dobę, zanim surowe fakty znikną.
 
-    Wymaga autocommit - TimescaleDB nie pozwala wywołać
-    refresh_continuous_aggregate wewnątrz jawnej transakcji.
-
-    Okno celowo wyprowadzone z eksportowanej doby, a nie stałe: musi mieścić
-    się w oknie retencji surowych faktów. Odświeżenie zakresu, z którego
-    surowe chunki już usunięto, przeliczyłoby kubełki z pustki i SKASOWAŁO
-    poprawne wiersze agregatu."""
+    Okno musi mieścić się w retencji surowych faktów: odświeżenie zakresu,
+    z którego chunki już usunięto, kasuje poprawne wiersze agregatu.
+    Autocommit wymagany przez TimescaleDB."""
     od = datetime.combine(dzien, dtime.min, tzinfo=TZ) - timedelta(hours=1)
     do = datetime.now(TZ) - timedelta(minutes=10)
     with psycopg.connect(DB_URL, autocommit=True) as conn, conn.cursor() as cur:
@@ -47,10 +40,8 @@ def _odswiez_agregaty(dzien) -> None:
 
 
 def _kasuj_stare_fakty() -> int:
-    """Jawne drop_chunks zamiast polityki retencji.
-
-    Polityka kasuje według zegara, niezależnie od tego, czy dane dotarły na
-    Drive. Tutaj kasowanie następuje wyłącznie po zweryfikowanym uploadzie."""
+    """Jawne drop_chunks zamiast polityki retencji, która kasowałaby według
+    zegara niezależnie od tego, czy dane dotarły na Drive."""
     with psycopg.connect(DB_URL, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT drop_chunks('fakt_opoznienia', older_than => %s::interval)",
@@ -63,9 +54,7 @@ def _kasuj_stare_fakty() -> int:
 
 
 def _sprzataj_eksport(dzien) -> None:
-    """Usuwa lokalne kopie wyeksportowanych dób po potwierdzonej wysyłce.
-
-    Katalog wymiary/ zostaje - jest mały i nadpisywany co noc."""
+    """Usuwa lokalne kopie wyeksportowanych dób. Katalog wymiary/ zostaje."""
     for rodzina in ("fakty", "ca_15min", "etl_run"):
         d = EXPORT_DIR / rodzina / f"dt={dzien:%Y-%m-%d}"
         if d.exists():
@@ -83,8 +72,6 @@ def main() -> int:
     dzien = (datetime.now(TZ) - timedelta(days=1)).date()
     logger.info(f"=== zadanie nocne, doba {dzien} ===")
 
-    # Bramka przed jakąkolwiek pracą: jeśli Drive jest nieosiągalny, nie ma
-    # sensu eksportować, a tym bardziej kasować.
     if not dostepny():
         logger.error("rclone niedostępny - przerywam przed kasowaniem czegokolwiek")
         return 1

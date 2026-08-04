@@ -23,28 +23,19 @@ TRIP_CANCELED = gtfs_realtime_pb2.TripDescriptor.CANCELED
 STOP_SKIPPED = gtfs_realtime_pb2.TripUpdate.StopTimeUpdate.SKIPPED
 
 
-# ============================================================================
-# Zamykanie procesu i archiwum surowe
-# ============================================================================
-
 _stop = False
 
 
 def _handle_signal(signum, _frame):
-    """SIGTERM z `docker stop` NIE wykonuje bloku finally - domyślną akcją
-    jest natychmiastowe zakończenie procesu. Flaga pozwala domknąć bieżącą
-    iterację, zamknąć połączenie i nie zostawić pliku .tmp w archiwum."""
+    # SIGTERM nie wykonuje bloku finally - flaga pozwala domknąć iterację.
     global _stop
     _stop = True
     logger.warning(f"Sygnał {signal.Signals(signum).name} - kończę po iteracji")
 
 
 def _sleep_until(deadline: float) -> None:
-    """Sen w kawałkach, żeby sygnał nie czekał do końca taktu.
-
-    PEP 475: time.sleep jest wznawiany po obsłudze sygnału, więc handler
-    ustawiający samą flagę nie przerwałby sleep(20). `docker stop` daje
-    domyślnie 10 s przed SIGKILL - bez tego restart bywałby twardym ubiciem."""
+    # Sen w kawałkach: PEP 475 wznawia time.sleep po sygnale, więc sleep(20)
+    # opóźniałby zamknięcie ponad limit `docker stop`.
     while not _stop:
         left = deadline - time.monotonic()
         if left <= 0:
@@ -53,20 +44,10 @@ def _sleep_until(deadline: float) -> None:
 
 
 def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
-    """Zapis surowej odpowiedzi strumienia na dysk (decyzja D2 specyfikacji).
+    """Zapis surowej odpowiedzi (D2), partycjonowany dt=/hh= pod pyarrow.
 
-    Partycjonowanie dt=/hh= w konwencji Hive - pyarrow odczyta to później bez
-    dodatkowej pracy (decyzja D3), a zamknięty katalog godziny jest naturalną
-    jednostką uploadu na Drive.
-
-    Zapis atomowy przez rename z dwóch powodów: restart w trakcie zapisu nie
-    zostawi obciętego pliku, a uploader nigdy nie zobaczy pliku w połowie.
-    Istniejący plik pomijamy - to dedup po timestampie nagłówka feedu.
-
-    UWAGA. Funkcja nigdy nie propaguje wyjątku. Archiwum jest ważne, ale
-    zapis faktów do bazy jest ważniejszy: pełny dysk czy zły właściciel
-    katalogu ma kosztować archiwum, a nie całą pętlę ETL. Awarię widać
-    w logach, a healthcheck.py pilnuje wolnego miejsca osobno."""
+    Nigdy nie propaguje wyjątku: awaria archiwum nie może zatrzymać zapisu
+    faktów do bazy."""
     try:
         dt = datetime.fromtimestamp(header_ts, tz=timezone.utc).astimezone(TZ)
         d = RAW_DIR / kind / f"dt={dt:%Y-%m-%d}" / f"hh={dt:%H}"
@@ -77,7 +58,7 @@ def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
         tmp = d / (final.name + ".tmp")
         with gzip.open(tmp, "wb", compresslevel=6) as f:
             f.write(raw)
-        tmp.replace(final)
+        tmp.replace(final)   # atomowo - uploader nie zobaczy pliku w połowie
         return True
     except Exception as e:
         logger.error(f"Archiwum surowe {kind} nieudane: {e}")
@@ -85,15 +66,8 @@ def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
 
 
 def _archive_vehicle_positions(client: httpx.Client) -> None:
-    """Strumień pozycji pojazdów - WYŁĄCZNIE archiwum, bez parsowania do bazy.
-
-    Decyzja D1 wyklucza cechy prędkościowe z powodu kosztu przetwarzania, ale
-    dotyczy przetwarzania, nie zapisu bajtów. Strumień GTFS-RT jest ulotny
-    (rozdz. 2.4), więc nie archiwizując go teraz, zamykamy trwale kierunek
-    dalszych prac z rozdz. 6.2 dla tego okna czasowego.
-
-    Krótki timeout i połknięty wyjątek: awaria strumienia drugorzędnego nie
-    może kosztować ani jednej migawki tripUpdates."""
+    # Tylko archiwum, bez parsowania do bazy (D1). Wyjątek połknięty: awaria
+    # strumienia pobocznego nie może kosztować migawki tripUpdates.
     try:
         raw = client.get(VP_URL, timeout=VP_TIMEOUT_S).content
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -103,21 +77,11 @@ def _archive_vehicle_positions(client: httpx.Client) -> None:
         logger.warning(f"vehiclePositions pominięte: {e}")
 
 
-# ============================================================================
-# Cache rozkładu w pamięci
-# ============================================================================
-#
-# UWAGA. Trzymamy cały lookup_schedule w słowniku w pamięci procesu bo:
-# 1. Jest go 1.4 mln wierszy ale to około 200 MB więc żaden problem.
-# 2. Każde TripUpdate z RT wymaga lookupu rozkładowego czasu. Robić to per
-#    wiersz przez SELECT to byłoby 1000+ roundtripów do DB co snapshot.
-# 3. RT GZM publikuje TripUpdaty BEZ stop_id - tylko trip_id i sequence.
-#    Zwykły lookup po (trip, stop_id, seq) by się nie udał. Indeksujemy więc
-#    po (trip_id, stop_sequence) bo to jest jednoznaczne w obrębie kursu,
-#    a stop_id wyciągamy z cache. Sprawdzone empirycznie skryptem
-#    diagnostycznym - bez tego wszystkie TripUpdaty kończą jako "unknown".
+# Cały lookup_schedule (1,3 mln wierszy, ~700 MB) trzymamy w pamięci procesu:
+# lookup per wiersz przez SELECT to byłoby 1000+ roundtripów na migawkę.
+# RT GZM publikuje TripUpdate BEZ stop_id, więc cache indeksujemy po
+# (trip_id, stop_sequence), a stop_id bierzemy z niego.
 def _is_alive(conn) -> bool:
-    """Szybki sanity check connection. Zwraca True jeśli można pisać do DB."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
@@ -176,8 +140,7 @@ class ScheduleCache:
         return self._by_trip.get(trip_id, [])
     
     def current_version_in_db(self, conn) -> int | None:
-        """Sprawdza, czy w DB jest nowsza wersja niż nasz cache.
-        Zwraca wersja_id z DB, lub None jeśli nie udało się sprawdzić."""
+        """Najnowsza wersja rozkładu w bazie, albo None przy błędzie."""
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -207,15 +170,13 @@ class ScheduleCache:
                 self.wersja_id, od, do = row
                 logger.info(f"Aktywna wersja rozkładu: {self.wersja_id} ({od} → {do})")
 
-            # Zwolnienie starego cache'u PRZED czytaniem nowego - inaczej przy
-            # reloadzie trzymalibyśmy w pamięci dwie kopie naraz.
+            # Zwolnienie starego cache'u przed czytaniem nowego - inaczej przy
+            # reloadzie trzymalibyśmy dwie kopie naraz.
             self._cache = {}
             self._by_trip = {}
 
-            # Kursor serwerowy. Domyślny kursor psycopg3 buforuje CAŁY wynik
-            # (1,4 mln wierszy) po stronie klienta zanim odda pierwszy wiersz -
-            # to zbędny szczyt ~1 GB obok docelowego słownika, a proces i tak
-            # jest najcięższą rzeczą na VPS.
+            # Kursor serwerowy: domyślny buforuje cały wynik po stronie
+            # klienta, co daje zbędny szczyt ~1 GB przy 3,7 GB RAM na VPS.
             with conn.cursor(name="lookup_load") as cur:
                 cur.itersize = 50_000
                 cur.execute("""
@@ -231,24 +192,12 @@ class ScheduleCache:
                     f"{len(self._by_trip):,} kursów ({time.monotonic() - t0:.1f}s)")
 
 
-# ============================================================================
-# Główna pętla RT
-# ============================================================================
-#
-# UWAGA. RT GZM publikuje MINIMALNE TripUpdate'y:
-# - brak start_date -> zakładamy dziś w strefie Europe/Warsaw
-# - brak stop_id -> lookup po (trip_id, sequence), stop_id z cache
-# - brak fallbacków na arrival.time/departure.* -> tylko arrival.delay
-# Sprawdzone empirycznie. Każdy snapshot to około 1000 updateów.
+# TripUpdate z GZM są minimalne: bez start_date (zakładamy dziś w Europe/Warsaw),
+# bez stop_id, bez arrival.time - tylko arrival.delay.
 
 def _process_feed(feed, cache: ScheduleCache) -> list[tuple]:
-    """Zamienia FeedMessage na listę krotek do COPY.
-
-    Trzy ścieżki:
-    - Kurs CANCELED: wiersze dla wszystkich planowanych zatrzymań (status='ANULOWANY').
-    - Przystanek SKIPPED: pojedynczy wiersz (status='POMINIETY').
-    - Normalna obserwacja: wiersz z arrival.delay (status='OBSERWACJA').
-    """
+    """FeedMessage -> krotki do COPY. Trzy ścieżki: kurs CANCELED (ANULOWANY),
+    przystanek SKIPPED (POMINIETY), zwykła obserwacja (OBSERWACJA)."""
     snapshot_dt = datetime.fromtimestamp(feed.header.timestamp, tz=timezone.utc)
     snapshot_local_date = snapshot_dt.astimezone(TZ).date()
     wersja_id = cache.wersja_id
@@ -361,16 +310,10 @@ def _log_etl_run(conn, started_at, snapshot_ts, obserwacje,
         logger.error(f"Nie udało się zapisać audit log: {e}")
 
 def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
-    """Główna pętla pollingu. Ctrl+C lub SIGTERM kończy.
+    """Główna pętla pollingu. Kończy na Ctrl+C lub SIGTERM.
 
-    Zabezpieczenia produkcyjne:
-    - Reconnect z backoff przy zerwanym connection do DB
-    - Auto-reload cache, gdy w DB pojawi się nowsza wersja rozkładu
-      (eliminuje konieczność restartu RT po static ETL)
-    - Pętla try/except wokół iteracji - żaden nieprzewidziany wyjątek
-      jej nie zabije, jedynie zostanie zalogowany
-    - Takt oparty na deadline, nie na sleep() po iteracji
-    - Czyste zamknięcie na SIGTERM (restart kontenera)"""
+    Reconnect z backoff, auto-reload cache'u po zmianie wersji rozkładu,
+    żaden wyjątek iteracji nie zabija pętli."""
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -387,8 +330,7 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
     conn = _connect_with_retry()
     cache.load()
 
-    # Jeden klient na cały proces. Bez tego każda iteracja stawiała nowe
-    # połączenie TLS - 4320 handshake'ów na dobę przez dwa miesiące.
+    # Jeden klient na proces - inaczej 4320 handshake'ów TLS na dobę.
     client = httpx.Client(
         timeout=RT_TIMEOUT_S,
         limits=httpx.Limits(max_keepalive_connections=4, keepalive_expiry=120.0),
@@ -398,9 +340,6 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
     last_snapshot_ts = 0
     next_tick = time.monotonic()
     try:
-        # `while not _stop` zamiast `while True`: gdy sygnał przyjdzie w
-        # trakcie snu, _sleep_until wraca od razu i pętla kończy się tu,
-        # bez wykonywania jeszcze jednej pełnej iteracji.
         while not _stop:
             started_at = datetime.now(tz=timezone.utc)
             t_start = time.monotonic()
@@ -433,10 +372,8 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
                     feed.header.timestamp, tz=timezone.utc
                 )
 
-                # Archiwum PRZED przetwarzaniem i przed sprawdzeniem świeżości.
-                # D2 mówi o źródle "nienaruszalnym obok bazy" - ma przetrwać
-                # również błąd w _process_feed. Powtórzoną migawkę odetnie
-                # samo _archive_raw po istnieniu pliku.
+                # Przed przetwarzaniem - archiwum ma przetrwać także błąd
+                # w _process_feed. Duplikat odcina samo _archive_raw.
                 _archive_raw(raw, feed.header.timestamp, "tripUpdates")
 
                 if feed.header.timestamp <= last_snapshot_ts:
@@ -458,8 +395,7 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
                 status = "ERROR"
                 blad = str(e)[:500]
 
-            # czas_s liczony PRZED archiwum pozycji - fakt_etl_run ma mierzyć
-            # potok ETL, nie doklejony do niego zapis strumienia pobocznego.
+            # Przed archiwum pozycji - fakt_etl_run mierzy potok ETL.
             czas_s = round(time.monotonic() - t_start, 3)
 
             try:
@@ -468,25 +404,19 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
             except Exception as e:
                 logger.error(f"Audit log w sekcji nieudany: {e}")
 
-            # Dopiero po zapisie faktów - wolne pobranie strumienia pobocznego
-            # nie może opóźnić głównego.
             if ARCHIVE_VP:
                 _archive_vehicle_positions(client)
 
             if once or _stop:
                 break
 
-            # Takt oparty na deadline. sleep(interval_s) PO iteracji dawał
-            # rzeczywisty okres 20 s + czas iteracji, więc gęstość próbkowania
-            # zależała od opóźnień sieci. To trafia wprost w cechę n(t)
-            # z rozdz. 8, a anomalia A2 jest zdefiniowana jako spadek n(t) -
-            # nierówny takt produkowałby fałszywe A2 z przyczyn czysto
-            # infrastrukturalnych.
+            # Takt oparty na deadline, nie sleep() po iteracji: nierówne
+            # próbkowanie trafiałoby wprost w cechę n(t) i produkowało
+            # fałszywe anomalie A2 z przyczyn infrastrukturalnych.
             next_tick += interval_s
             drift = time.monotonic() - next_tick
             if drift > 0:
-                # Iteracja przekroczyła takt (typowo: reload cache'u).
-                # Nie nadrabiamy serią natychmiastowych odpytań - resync.
+                # Po długiej iteracji resync zamiast serii nadrabiających.
                 if drift > interval_s:
                     logger.warning(f"Takt opóźniony o {drift:.1f}s - resync")
                 next_tick = time.monotonic()

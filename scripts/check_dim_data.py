@@ -1,16 +1,10 @@
 """Diagnostyka szkód w dim_data.typ_dnia.
 
-Uruchom PRZED migracją na VPS. Do wersji z sierpnia 2026 static ETL nadpisywał
-typ_dnia wartością 'brak rozkładu' dla wszystkich dat przeszłych przy każdym
-uruchomieniu: _build_dim_data liczy typ_dnia z calendar pobranych paczek, które
-pokrywają tylko [dziś, dziś+13], a UPSERT robił bezwarunkowe
-SET typ_dnia = EXCLUDED.typ_dnia.
+Wcześniejsze wersje static ETL nadpisywały typ_dnia wartością 'brak rozkładu'
+dla dat przeszłych przy każdym uruchomieniu. typ_dnia wchodzi wprost do cechy
+r(t), więc warto sprawdzić skalę przed użyciem danych historycznych.
 
-Ma to znaczenie, bo typ_dnia (dzień roboczy / weekend) wchodzi wprost do cechy
-r(t) - odchylenia od profilu dobowego - z rozdz. 8 specyfikacji.
-
-Skrypt niczego nie zmienia. Raportuje skalę problemu i to, czy dotyczy dat,
-dla których faktycznie masz obserwacje.
+Skrypt niczego nie zmienia.
 
     python scripts/check_dim_data.py
 """

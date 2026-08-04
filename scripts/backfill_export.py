@@ -1,14 +1,10 @@
 """Jednorazowy eksport zakresu dat na Drive.
 
-Do migracji: przed przeniesieniem bazy na VPS trzeba wypchnąć na Drive cały
-miesiąc historyczny, dzień po dniu. Zadanie nocne obsługuje tylko dobę D-1,
-więc historię robi się tym skryptem.
-
-Uruchamiaj LOKALNIE, przed przycięciem bazy - tu jest dużo miejsca na dysku
-i można spokojnie powtórzyć nieudany dzień.
+Zadanie nocne obsługuje tylko dobę D-1, więc historię wypycha się tym skryptem.
+Bez argumentów bierze cały zakres dostępny w bazie.
 
     python scripts/backfill_export.py --od 2026-07-01 --do 2026-08-02
-    python scripts/backfill_export.py --od 2026-07-01 --do 2026-08-02 --bez-wysylki
+    python scripts/backfill_export.py --bez-wysylki
 """
 
 import argparse

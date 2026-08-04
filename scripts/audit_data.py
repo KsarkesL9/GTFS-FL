@@ -1,12 +1,8 @@
 """Audyt jakości danych: co łapiemy, co gubimy, czy trafia do właściwych kolumn.
 
-Dwie perspektywy:
-1. ŻYWY FEED - pobiera świeżą migawkę i liczy, ile encji odrzucamy i dlaczego.
-   To jest kluczowe dla badań: _process_feed cicho pomija zatrzymania bez
-   dopasowania w rozkładzie i bez arrival.delay, a systematyczne odrzuty
-   zaburzyłyby cechę n(t) z rozdz. 8 - czyli dokładnie tę, na której oparta
-   jest detekcja anomalii A2 (zanik kursów).
-2. BAZA - rozkłady wartości w kolumnach, sensowność zakresów, doba operacyjna.
+Pobiera świeżą migawkę i liczy, ile encji odrzucamy i dlaczego (_process_feed
+cicho pomija zatrzymania bez dopasowania w rozkładzie), a następnie sprawdza
+rozkłady wartości w bazie, zakresy i dobę operacyjną.
 
     python scripts/audit_data.py
 """
