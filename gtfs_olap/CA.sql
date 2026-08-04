@@ -1,3 +1,63 @@
+-- ============================================================================
+-- Migracja definicji agregatów
+-- ============================================================================
+--
+-- CREATE MATERIALIZED VIEW IF NOT EXISTS po cichu POMIJA zmienioną definicję,
+-- jeśli widok już istnieje. Bez tego bloku każda zmiana poniższych zapytań
+-- działałaby tylko na świeżej bazie, a na działającej maszynie byłaby
+-- niewidoczna - i nikt by się nie zorientował.
+--
+-- !!! UWAGA. Podniesienie WERSJI_AGREGATOW KASUJE zmaterializowaną historię
+-- wszystkich agregatów. Przy retencji surowych faktów 48 h odtworzenie
+-- czegokolwiek starszego wymaga przeliczenia Parquetów z Google Drive poza
+-- bazą. Podnoś świadomie i najlepiej wcześnie w cyklu życia projektu.
+DO $migracja$
+DECLARE
+    wersja_docelowa INT := 2;   -- 2: filtr sensowności opóźnień (-1h/+2h)
+    zmaterializowane BIGINT;
+BEGIN
+    CREATE TABLE IF NOT EXISTS _ca_wersja (wersja INT PRIMARY KEY);
+
+    IF EXISTS (SELECT 1 FROM _ca_wersja WHERE wersja = wersja_docelowa) THEN
+        RETURN;
+    END IF;
+
+    IF to_regclass('ca_opoznienia_15min') IS NOT NULL THEN
+        EXECUTE 'SELECT count(*) FROM ca_opoznienia_15min' INTO zmaterializowane;
+        RAISE WARNING 'Zmiana definicji agregatów: usuwam % zmaterializowanych '
+                      'wierszy z ca_opoznienia_15min i widoków pochodnych.',
+                      zmaterializowane;
+    END IF;
+
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_dzien CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_1h CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_15min CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_15min_przystanek CASCADE;
+
+    DELETE FROM _ca_wersja;
+    INSERT INTO _ca_wersja VALUES (wersja_docelowa);
+END
+$migracja$;
+
+
+-- ============================================================================
+-- Agregat bazowy: okno 15 minut na linię i operatora
+-- ============================================================================
+--
+-- FILTR SENSOWNOŚCI: opoznienie_s BETWEEN -3600 AND 7200.
+-- ZTM publikuje sporadycznie wartości rzędu 195-196 godzin (zweryfikowane
+-- skryptem audit_data.py: 3 różne kursy, wszystkie skupione wokół 8,15 doby -
+-- to artefakt źródła, nie błąd potoku). Jeden taki wiersz w oknie z ~1000
+-- obserwacji przesuwa średnie opóźnienie o ~700 s, podczas gdy amplitudy
+-- anomalii A1 z rozdz. 10 to 60-300 s. Nieodfiltrowany artefakt wyglądałby
+-- więc jak anomalia kilkukrotnie silniejsza od tych, które model ma wykrywać,
+-- i zaburzałby kalibrację progu percentylowego z rozdz. 8.1.
+--
+-- Filtr obejmuje też licznik obserwacji, żeby suma i mianownik liczyły się na
+-- tym samym zbiorze - inaczej d(t) = suma/obserwacje byłoby niespójne.
+-- Kolumna odrzucone czyni filtrowanie jawnym i policzalnym w raporcie.
+-- Surowe fakty i archiwum na Drive pozostają nietknięte, więc próg da się
+-- zrewidować bez utraty danych.
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_15min
 WITH (timescaledb.continuous) AS
 SELECT
@@ -6,13 +66,22 @@ SELECT
     wersja_id,
     linia_id,
     operator_id,
-    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS suma_opoznien,
-    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA')          AS obserwacje,
+    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS suma_opoznien,
     COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
-                              AND opoznienie_s BETWEEN -30 AND 60)  AS punktualne,
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS obserwacje,
+    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -30 AND 60)     AS punktualne,
     -- Ekstrema
-    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS min_opoznienie,
-    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS max_opoznienie,
+    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS min_opoznienie,
+    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS max_opoznienie,
+    -- Jawny ślad filtrowania: ile obserwacji wypadło poza próg sensowności.
+    -- Bez tej kolumny odrzucanie byłoby niewidoczne, a w pracy badawczej
+    -- każde odrzucenie danych musi dać się policzyć i opisać.
+    COUNT(*) FILTER (WHERE status = 'OBSERWACJA'
+                     AND (opoznienie_s < -3600 OR opoznienie_s > 7200)) AS odrzucone,
     -- Liczniki zdarzeń:
     COUNT(*) FILTER (WHERE status = 'ANULOWANY')                    AS anulowane,
     COUNT(*) FILTER (WHERE status = 'POMINIETY')                    AS pominiete
@@ -48,6 +117,7 @@ SELECT
     SUM(punktualne)     AS punktualne,
     SUM(anulowane)      AS anulowane,
     SUM(pominiete)      AS pominiete,
+    SUM(odrzucone)      AS odrzucone,
     MIN(min_opoznienie) AS min_opoznienie,
     MAX(max_opoznienie) AS max_opoznienie
 FROM ca_opoznienia_15min
@@ -73,6 +143,7 @@ SELECT
     SUM(punktualne)     AS punktualne,
     SUM(anulowane)      AS anulowane,
     SUM(pominiete)      AS pominiete,
+    SUM(odrzucone)      AS odrzucone,
     MIN(min_opoznienie) AS min_opoznienie,
     MAX(max_opoznienie) AS max_opoznienie
 FROM ca_opoznienia_1h
@@ -93,12 +164,19 @@ SELECT
     wersja_id,
     przystanek_id,
     linia_id,
-    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS suma_opoznien,
-    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA')          AS obserwacje,
+    -- Ten sam filtr sensowności co w ca_opoznienia_15min - patrz komentarz tam.
+    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS suma_opoznien,
     COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
-                              AND opoznienie_s BETWEEN -30 AND 60)  AS punktualne,
-    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS min_opoznienie,
-    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS max_opoznienie,
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS obserwacje,
+    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -30 AND 60)     AS punktualne,
+    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS min_opoznienie,
+    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS max_opoznienie,
+    COUNT(*) FILTER (WHERE status = 'OBSERWACJA'
+                     AND (opoznienie_s < -3600 OR opoznienie_s > 7200)) AS odrzucone,
     COUNT(*) FILTER (WHERE status = 'ANULOWANY')                    AS anulowane,
     COUNT(*) FILTER (WHERE status = 'POMINIETY')                    AS pominiete
 FROM fakt_opoznienia
