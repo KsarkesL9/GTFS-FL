@@ -5,8 +5,15 @@
 #   04:00 static ETL    - po eksporcie, żeby nowa wersja rozkładu i wywołany
 #                         nią reload cache'u nie wpadły w środek eksportu
 #
+# UWAGA na zestrojenie z GTFS_UPLOAD_QUIET_MIN (domyślnie 10 min). Katalog
+# godziny zamyka się o pełnej godzinie, więc uruchomienie o :05 zastawałoby go
+# z zaledwie 5 minutami ciszy - poniżej progu - i odkładało wysyłkę o całą
+# godzinę. Co 15 minut daje pierwszą realną szansę o :15 (15 min ciszy,
+# komfortowo powyżej progu) i trzy kolejne podejścia w tej samej godzinie,
+# gdyby Drive akurat nie odpowiadał.
+#
 # min  godz  dzień  mies  dzieńTyg  polecenie
-5      *     *      *     *         python -m gtfs_olap.maintenance.upload_raw
+*/15   *     *      *     *         python -m gtfs_olap.maintenance.upload_raw
 30     3     *      *     *         python -m gtfs_olap.maintenance.nightly
 0      4     *      *     *         python scripts/run_static_etl.py
 */10   *     *      *     *         python -m gtfs_olap.maintenance.healthcheck
