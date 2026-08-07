@@ -36,8 +36,3 @@ OPERATOR_TO_CLIENT: dict[str, str] = {
     for client, operators in CLIENTS.items()
     for operator in operators
 }
-
-
-def client_of(operator_id: str) -> str | None:
-    """Klient federacji dla danego operatora, albo None jeśli nieznany."""
-    return OPERATOR_TO_CLIENT.get(str(operator_id))
