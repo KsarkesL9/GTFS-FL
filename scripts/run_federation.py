@@ -23,8 +23,9 @@ from gtfs_olap.model import alarm_threshold, reconstruction_errors
 STRATEGIES = {
     "fedavg": FedAvg,
     "fedprox": FedProx,
-    "fedmedian": FedMedian,        # obrona odporna, rozdz. 11.2
-    "fedtrimmed": FedTrimmedAvg,   # obrona odporna, rozdz. 11.2
+    # Odporne na klienta odstającego - do testów zatrucia modelu.
+    "fedmedian": FedMedian,
+    "fedtrimmed": FedTrimmedAvg,
 }
 
 

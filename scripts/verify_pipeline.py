@@ -135,7 +135,7 @@ def autoencoder_shape() -> None:
     x = torch.randn(5, 8, len(FEATURES))
     check(model(x).shape == x.shape, "wyjscie ma ksztalt wejscia")
     check(10_000 < model.parameter_count() < 1_000_000,
-          f"rozmiar modelu w widelkach z rozdz. 13 ({model.parameter_count():,})")
+          f"rozmiar modelu w rozsadnych widelkach ({model.parameter_count():,})")
 
 
 def main() -> int:

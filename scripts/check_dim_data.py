@@ -54,7 +54,7 @@ def main() -> int:
             logger.error(
                 f"{zepsute} dat przeszłych ({udzial:.0f}%) ma typ_dnia "
                 f"'brak rozkładu', w tym {dotkniete} dni z realnymi obserwacjami. "
-                f"Cecha r(t) z rozdz. 8 byłaby liczona na wadliwym typie dnia."
+                f"Odchylenie od profilu dobowego liczyłoby się na wadliwym typie dnia."
             )
         else:
             logger.warning(
