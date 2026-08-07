@@ -35,3 +35,8 @@ data/
 *.pbix
 kepler.gl.html
 
+
+# Dane robocze potoku cech
+dane/
+cechy/
+*.dump
