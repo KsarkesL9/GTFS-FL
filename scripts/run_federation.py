@@ -3,9 +3,9 @@
 Wczytuje sekwencje z potoku cech, uruchamia trening federacyjny wybraną
 strategią i porównuje go z modelami czysto lokalnymi.
 
-    python scripts/run_federation.py --strategia fedavg --rundy 5
-    python scripts/run_federation.py --strategia fedprox --mu 0.1
-    python scripts/run_federation.py --strategia fedmedian
+    python scripts/run_federation.py --strategy fedavg --rounds 5
+    python scripts/run_federation.py --strategy fedprox --mu 0.1
+    python scripts/run_federation.py --strategy fedmedian
 """
 
 import argparse
@@ -16,100 +16,110 @@ import numpy as np
 from flwr.server.strategy import FedAvg, FedMedian, FedProx, FedTrimmedAvg
 from loguru import logger
 
-from gtfs_olap.cechy import CECHY
-from gtfs_olap.federacja import Klient, trenuj_lokalnie, uruchom_federacje
-from gtfs_olap.model import bledy_rekonstrukcji, prog_alarmowy
+from gtfs_olap.features import FEATURES
+from gtfs_olap.federation import Client, run_federation, train_local
+from gtfs_olap.model import alarm_threshold, reconstruction_errors
 
-STRATEGIE = {
+STRATEGIES = {
     "fedavg": FedAvg,
     "fedprox": FedProx,
-    "fedmedian": FedMedian,          # obrona odporna, rozdz. 11.2
-    "fedtrimmed": FedTrimmedAvg,     # obrona odporna, rozdz. 11.2
+    "fedmedian": FedMedian,        # obrona odporna, rozdz. 11.2
+    "fedtrimmed": FedTrimmedAvg,   # obrona odporna, rozdz. 11.2
 }
 
 
-def wczytaj_klientow(katalog: Path, udzial_walidacyjny: float = 0.2) -> list[Klient]:
-    klienci = []
-    for kat in sorted(katalog.glob("klient=*")):
-        X = np.load(kat / "X_trening.npy")
+def load_clients(directory: Path, val_share: float = 0.2) -> list[Client]:
+    clients = []
+    for path in sorted(directory.glob("client=*")):
+        X = np.load(path / "X_train.npy")
         if len(X) < 10:
-            logger.warning(f"{kat.name}: tylko {len(X)} sekwencji, pomijam")
+            logger.warning(f"{path.name}: tylko {len(X)} sekwencji, pomijam")
             continue
         # Podział czasowy, nie losowy - walidacja musi być późniejsza niż trening.
-        granica = int(len(X) * (1 - udzial_walidacyjny))
-        klienci.append(Klient(kat.name.split("=", 1)[1], X[:granica], X[granica:]))
-    return klienci
+        boundary = int(len(X) * (1 - val_share))
+        clients.append(Client(path.name.split("=", 1)[1], X[:boundary], X[boundary:]))
+    return clients
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cechy", type=Path, default=Path("cechy"))
-    ap.add_argument("--wyniki", type=Path, default=Path("wyniki"))
-    ap.add_argument("--strategia", choices=list(STRATEGIE), default="fedavg")
-    ap.add_argument("--rundy", type=int, default=5)
-    ap.add_argument("--epoki-lokalne", type=int, default=3)
-    ap.add_argument("--ukryte", type=int, default=64)
+    ap.add_argument("--features", type=Path, default=Path("cechy"))
+    ap.add_argument("--out", type=Path, default=Path("wyniki"))
+    ap.add_argument("--strategy", choices=list(STRATEGIES), default="fedavg")
+    ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--local-epochs", type=int, default=3)
+    ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--mu", type=float, default=0.1, help="tylko dla fedprox")
-    ap.add_argument("--ziarno", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    klienci = wczytaj_klientow(args.cechy)
-    if not klienci:
+    clients = load_clients(args.features)
+    if not clients:
         logger.error("Brak klientów z wystarczającą liczbą sekwencji")
         return 1
-    n_cech = klienci[0].X_tren.shape[2]
-    assert n_cech == len(CECHY), f"{n_cech} cech w danych, {len(CECHY)} w module"
+    n_features = clients[0].X_train.shape[2]
+    assert n_features == len(FEATURES), \
+        f"{n_features} cech w danych, {len(FEATURES)} w module"
 
-    logger.info(f"{len(klienci)} klientów, {sum(len(k.X_tren) for k in klienci)} "
-                f"sekwencji treningowych, {n_cech} cech")
+    logger.info(f"{len(clients)} klientów, "
+                f"{sum(len(c.X_train) for c in clients)} sekwencji treningowych, "
+                f"{n_features} cech")
 
-    kwargs = {"min_available_clients": len(klienci),
-              "min_fit_clients": len(klienci),
-              "fit_metrics_aggregation_fn": lambda m: {
-                  "strata": float(np.mean([x["strata"] for _, x in m]))}}
-    if args.strategia == "fedprox":
+    kwargs = {
+        "min_available_clients": len(clients),
+        "min_fit_clients": len(clients),
+        "fit_metrics_aggregation_fn": lambda metrics: {
+            "loss": float(np.mean([m["loss"] for _, m in metrics]))},
+    }
+    if args.strategy == "fedprox":
         kwargs["proximal_mu"] = args.mu
-    strategia = STRATEGIE[args.strategia](**kwargs)
-    mu = args.mu if args.strategia == "fedprox" else 0.0
+    strategy = STRATEGIES[args.strategy](**kwargs)
+    mu = args.mu if args.strategy == "fedprox" else 0.0
 
-    globalny, historia = uruchom_federacje(
-        klienci, strategia, args.rundy, n_cech, args.ukryte,
-        args.epoki_lokalne, mu, args.ziarno)
+    global_model, history = run_federation(
+        clients, strategy, args.rounds, n_features, args.hidden,
+        args.local_epochs, mu, args.seed)
 
     # Budżet treningowy musi być równy, inaczej porównanie mierzy liczbę epok,
     # a nie wartość federacji.
-    epoki_lokalne_odniesienia = args.rundy * args.epoki_lokalne
-    logger.info(f"Modele czysto lokalne, {epoki_lokalne_odniesienia} epok "
+    local_epochs = args.rounds * args.local_epochs
+    logger.info(f"Modele czysto lokalne, {local_epochs} epok "
                 f"(tyle samo co federacja) - odniesienie dla E1...")
-    print(f"\n{'klient':<26} {'sekw':>6} {'federacja':>11} {'lokalny':>11} {'zysk':>8} {'próg 99,5':>11}")
-    porownanie = {}
-    for k in klienci:
-        e_fed = bledy_rekonstrukcji(globalny, k.X_wal)
-        lokalny = trenuj_lokalnie(k, n_cech, args.ukryte,
-                                  epoki=epoki_lokalne_odniesienia, ziarno=args.ziarno)
-        e_lok = bledy_rekonstrukcji(lokalny, k.X_wal)
-        zysk = 100 * (e_lok.mean() - e_fed.mean()) / e_lok.mean()
-        porownanie[k.nazwa] = {
-            "federacja": float(e_fed.mean()), "lokalny": float(e_lok.mean()),
-            "zysk_proc": float(zysk), "prog": prog_alarmowy(e_fed),
-        }
-        print(f"{k.nazwa:<26} {len(k.X_tren):>6} {e_fed.mean():>11.5f} "
-              f"{e_lok.mean():>11.5f} {zysk:>7.1f}% {prog_alarmowy(e_fed):>11.5f}")
 
-    args.wyniki.mkdir(parents=True, exist_ok=True)
-    plik = args.wyniki / f"{args.strategia}.json"
-    plik.write_text(json.dumps({
-        "strategia": args.strategia, "rundy": args.rundy, "mu": mu,
-        "ziarno": args.ziarno, "parametrow": globalny.liczba_parametrow(),
-        "mb_na_klienta_na_runde": historia[-1].mb_na_klienta,
-        "historia": [{"runda": h.runda, "walidacja": h.walidacja,
-                      "czas_s": h.czas_s} for h in historia],
-        "porownanie": porownanie,
+    print(f"\n{'klient':<26} {'sekw':>6} {'federacja':>11} "
+          f"{'lokalny':>11} {'zysk':>8} {'próg 99,5':>11}")
+    comparison = {}
+    for client in clients:
+        e_fed = reconstruction_errors(global_model, client.X_val)
+        local_model = train_local(client, n_features, args.hidden,
+                                  epochs=local_epochs, seed=args.seed)
+        e_local = reconstruction_errors(local_model, client.X_val)
+        gain = 100 * (e_local.mean() - e_fed.mean()) / e_local.mean()
+        comparison[client.name] = {
+            "federated": float(e_fed.mean()),
+            "local": float(e_local.mean()),
+            "gain_pct": float(gain),
+            "threshold": alarm_threshold(e_fed),
+        }
+        print(f"{client.name:<26} {len(client.X_train):>6} {e_fed.mean():>11.5f} "
+              f"{e_local.mean():>11.5f} {gain:>7.1f}% "
+              f"{alarm_threshold(e_fed):>11.5f}")
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    path = args.out / f"{args.strategy}.json"
+    path.write_text(json.dumps({
+        "strategy": args.strategy, "rounds": args.rounds, "mu": mu,
+        "seed": args.seed, "parameters": global_model.parameter_count(),
+        "mb_per_client_per_round": history[-1].mb_per_client,
+        "history": [{"round": h.round_no, "validation": h.validation,
+                     "seconds": h.seconds} for h in history],
+        "comparison": comparison,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(f"\nparametrów modelu: {globalny.liczba_parametrow():,}")
-    print(f"narzut komunikacyjny: {historia[-1].mb_na_klienta:.2f} MB na klienta na rundę")
-    logger.success(f"Zapisano {plik}")
+    print(f"\nparametrów modelu: {global_model.parameter_count():,}")
+    print(f"narzut komunikacyjny: {history[-1].mb_per_client:.2f} "
+          f"MB na klienta na rundę")
+    logger.success(f"Zapisano {path}")
     return 0
 
 

@@ -9,16 +9,18 @@ from __future__ import annotations
 from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import psycopg
 import pyarrow as pa
 import pyarrow.parquet as pq
 from loguru import logger
 
 from gtfs_olap.config import DB_URL, EXPORT_DIR, TZ
+from gtfs_olap.io_utils import write_atomic
 
 # Schemat jawny: przy zapisie strumieniowym partia z kolumną w całości NULL
 # dałaby wnioskowany typ niezgodny z resztą.
-FAKTY_SCHEMA = pa.schema([
+FACTS_SCHEMA = pa.schema([
     ("ts", pa.timestamp("us", tz="UTC")),
     ("wersja_id", pa.int32()),
     ("trip_id", pa.string()),
@@ -32,131 +34,117 @@ FAKTY_SCHEMA = pa.schema([
     ("status", pa.string()),
 ])
 
-_PARTIA = 100_000
+_BATCH = 100_000
 
 
-def _granice_doby(dzien: date) -> tuple[datetime, datetime]:
+def _day_bounds(day: date) -> tuple[datetime, datetime]:
     """Doba w czasie lokalnym - granice w UTC rozjechałyby się z agregatami,
     które używają time_bucket(..., 'Europe/Warsaw')."""
-    od = datetime.combine(dzien, dtime.min, tzinfo=TZ)
-    return od, od + timedelta(days=1)
+    start = datetime.combine(day, dtime.min, tzinfo=TZ)
+    return start, start + timedelta(days=1)
 
 
-def eksport_faktow(dzien: date) -> Path | None:
+def export_facts(day: date) -> Path | None:
     """Doba surowych faktów do jednego pliku Parquet.
 
-    Partiami przez kursor serwerowy - doba to ~4,8 mln wierszy, a obok działa
-    kolektor z ~700 MB cache'u."""
-    od, do = _granice_doby(dzien)
-    out_dir = EXPORT_DIR / "fakty" / f"dt={dzien:%Y-%m-%d}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"fakt_opoznienia_{dzien:%Y%m%d}.parquet"
-    tmp = out_dir / (out.name + ".tmp")
+    Partiami przez kursor serwerowy - doba to ~3,5 mln wierszy, a obok działa
+    kolektor z ~650 MB cache'u."""
+    start, end = _day_bounds(day)
+    out = (EXPORT_DIR / "fakty" / f"dt={day:%Y-%m-%d}"
+           / f"fakt_opoznienia_{day:%Y%m%d}.parquet")
+    rows = 0
 
-    writer = None
-    razem = 0
-    try:
-        with psycopg.connect(DB_URL) as conn:
-            with conn.cursor(name="eksport_faktow") as cur:
-                cur.itersize = _PARTIA
-                cur.execute(
-                    "SELECT ts, wersja_id, trip_id, przystanek_id, stop_sequence, "
-                    "       linia_id, operator_id, kierunek, data_kursu, "
-                    "       opoznienie_s, status "
-                    "FROM fakt_opoznienia "
-                    "WHERE ts >= %s AND ts < %s "
-                    "ORDER BY ts",
-                    (od, do),
-                )
-                while True:
-                    partia = cur.fetchmany(_PARTIA)
-                    if not partia:
-                        break
-                    kolumny = list(zip(*partia))
-                    tabela = pa.Table.from_arrays(
-                        [pa.array(k, type=f.type)
-                         for k, f in zip(kolumny, FAKTY_SCHEMA)],
-                        schema=FAKTY_SCHEMA,
-                    )
-                    if writer is None:
-                        writer = pq.ParquetWriter(tmp, FAKTY_SCHEMA,
-                                                  compression="zstd")
-                    writer.write_table(tabela)
-                    razem += len(partia)
-    finally:
-        if writer is not None:
-            writer.close()
+    def dump(target: Path) -> None:
+        nonlocal rows
+        writer = None
+        try:
+            with psycopg.connect(DB_URL) as conn:
+                with conn.cursor(name="export_facts") as cur:
+                    cur.itersize = _BATCH
+                    cur.execute(
+                        "SELECT ts, wersja_id, trip_id, przystanek_id, stop_sequence, "
+                        "       linia_id, operator_id, kierunek, data_kursu, "
+                        "       opoznienie_s, status "
+                        "FROM fakt_opoznienia "
+                        "WHERE ts >= %s AND ts < %s ORDER BY ts",
+                        (start, end))
+                    while True:
+                        batch = cur.fetchmany(_BATCH)
+                        if not batch:
+                            break
+                        columns = list(zip(*batch))
+                        table = pa.Table.from_arrays(
+                            [pa.array(c, type=f.type)
+                             for c, f in zip(columns, FACTS_SCHEMA)],
+                            schema=FACTS_SCHEMA)
+                        if writer is None:
+                            writer = pq.ParquetWriter(target, FACTS_SCHEMA,
+                                                      compression="zstd")
+                        writer.write_table(table)
+                        rows += len(batch)
+        finally:
+            if writer is not None:
+                writer.close()
 
-    if razem == 0:
-        tmp.unlink(missing_ok=True)
-        logger.warning(f"Brak faktów dla {dzien} - nic nie eksportuję")
+    if not write_atomic(out, dump) or rows == 0:
+        logger.warning(f"Brak faktów dla {day} - nic nie eksportuję")
         return None
 
-    tmp.replace(out)
-    logger.success(f"fakty {dzien}: {razem:,} wierszy → {out.name} "
+    logger.success(f"fakty {day}: {rows:,} wierszy → {out.name} "
                    f"({out.stat().st_size / 1e6:.1f} MB)")
     return out
 
 
-def _eksport_maly(sql: str, params: tuple, out: Path, opis: str) -> Path | None:
+def _export_small(sql: str, params: tuple, out: Path, label: str) -> Path | None:
     """Eksport małej tabeli w całości - nie dla fakt_opoznienia."""
-    import pandas as pd
-
     with psycopg.connect(DB_URL) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
-        kolumny = [d.name for d in cur.description]
-        wiersze = cur.fetchall()
+        columns = [d.name for d in cur.description]
+        rows = cur.fetchall()
 
-    if not wiersze:
-        logger.warning(f"Brak danych: {opis}")
+    if not rows:
+        logger.warning(f"Brak danych: {label}")
         return None
 
-    df = pd.DataFrame(wiersze, columns=kolumny)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.parent / (out.name + ".tmp")
-    df.to_parquet(tmp, index=False, compression="zstd")
-    tmp.replace(out)
-    logger.success(f"{opis}: {len(df):,} wierszy → {out.name}")
+    df = pd.DataFrame(rows, columns=columns)
+    write_atomic(out, lambda target: df.to_parquet(
+        target, index=False, compression="zstd"))
+    logger.success(f"{label}: {len(df):,} wierszy → {out.name}")
     return out
 
 
-def eksport_agregatu(dzien: date) -> Path | None:
+def export_aggregate(day: date) -> Path | None:
     """Agregat 15-minutowy - bezpośrednie źródło wektora cech."""
-    od, do = _granice_doby(dzien)
-    return _eksport_maly(
+    start, end = _day_bounds(day)
+    return _export_small(
         "SELECT * FROM ca_opoznienia_15min "
         "WHERE kwadrans >= %s AND kwadrans < %s ORDER BY kwadrans",
-        (od, do),
-        EXPORT_DIR / "ca_15min" / f"dt={dzien:%Y-%m-%d}" /
-        f"ca_opoznienia_15min_{dzien:%Y%m%d}.parquet",
-        f"ca_15min {dzien}",
-    )
+        (start, end),
+        EXPORT_DIR / "ca_15min" / f"dt={day:%Y-%m-%d}"
+        / f"ca_opoznienia_15min_{day:%Y%m%d}.parquet",
+        f"ca_15min {day}")
 
 
-def eksport_etl_run(dzien: date) -> Path | None:
+def export_etl_run(day: date) -> Path | None:
     """Rejestr przebiegów - jedyne źródło inwentaryzacji luk. Luka objawia się
     BRAKIEM wierszy, nie statusem ERROR."""
-    od, do = _granice_doby(dzien)
-    return _eksport_maly(
+    start, end = _day_bounds(day)
+    return _export_small(
         "SELECT * FROM fakt_etl_run "
         "WHERE started_at >= %s AND started_at < %s ORDER BY started_at",
-        (od, do),
-        EXPORT_DIR / "etl_run" / f"dt={dzien:%Y-%m-%d}" /
-        f"fakt_etl_run_{dzien:%Y%m%d}.parquet",
-        f"etl_run {dzien}",
-    )
+        (start, end),
+        EXPORT_DIR / "etl_run" / f"dt={day:%Y-%m-%d}"
+        / f"fakt_etl_run_{day:%Y%m%d}.parquet",
+        f"etl_run {day}")
 
 
-def eksport_wymiarow() -> list[Path]:
+def export_dimensions() -> list[Path]:
     """Wymiary w całości - małe, nadpisywane co noc."""
     out = []
-    for tabela in ("dim_linia", "dim_przystanek", "dim_operator",
-                   "dim_data", "dim_wersja_rozkladu"):
-        p = _eksport_maly(
-            f"SELECT * FROM {tabela}", (),
-            EXPORT_DIR / "wymiary" / f"{tabela}.parquet",
-            tabela,
-        )
-        if p is not None:
-            out.append(p)
+    for table in ("dim_linia", "dim_przystanek", "dim_operator",
+                  "dim_data", "dim_wersja_rozkladu"):
+        path = _export_small(f"SELECT * FROM {table}", (),
+                             EXPORT_DIR / "wymiary" / f"{table}.parquet", table)
+        if path is not None:
+            out.append(path)
     return out

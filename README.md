@@ -85,3 +85,20 @@ Konfigurację rclone utwórz przez `rclone authorize "drive"` i skopiuj do
 | `inventory_gaps.py` | luki w zbieraniu na podstawie `fakt_etl_run` |
 | `check_dim_data.py` | diagnostyka `typ_dnia` |
 | `backfill_export.py` | eksport zakresu dat na Drive |
+| `build_features.py` | macierz cech i sekwencje wejściowe modelu |
+| `run_federation.py` | trening federacyjny, porównanie z modelem lokalnym |
+| `verify_pipeline.py` | kontrola poprawności potoku cech i agregacji |
+| `bootstrap_vps.sh` | przygotowanie świeżego serwera |
+
+## Część uczeniowa
+
+Instalacja zależności modelu (osobno, bo kolektor ich nie potrzebuje):
+
+```bash
+pip install -e ".[uczenie]"
+```
+
+Podział na dziewięciu klientów federacji definiuje `gtfs_olap/clients.py`.
+Cechy z rozdz. 8 liczy `gtfs_olap/features.py`, autoenkoder GRU jest
+w `gtfs_olap/model.py`, a symulacja federacji w `gtfs_olap/federation.py`.
+Agregację wykonują strategie Flower: FedAvg, FedProx, FedMedian i FedTrimmedAvg.

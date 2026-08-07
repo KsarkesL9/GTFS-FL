@@ -10,7 +10,7 @@ from loguru import logger
 from gtfs_olap.config import RCLONE_BIN, RCLONE_REMOTE
 
 # Pod Google Drive: chunk 64M ogranicza liczbę żądań, retries łagodzą 403.
-_OPCJE_COPY = [
+_COPY_OPTS = [
     "--transfers=4",
     "--checkers=8",
     "--drive-chunk-size=64M",
@@ -21,43 +21,42 @@ _OPCJE_COPY = [
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [RCLONE_BIN, *args], capture_output=True, text=True, timeout=3600
-    )
+        [RCLONE_BIN, *args], capture_output=True, text=True, timeout=3600)
 
 
-def wyslij_i_zweryfikuj(lokalny: Path, podkatalog: str) -> bool:
+def upload_and_verify(local: Path, subpath: str) -> bool:
     """Wysyła katalog i potwierdza zgodność sumami kontrolnymi.
 
     True dopiero po udanym `rclone check`. Kod wyjścia samego `copy` nie
     wystarcza jako podstawa do kasowania. --one-way, bo zdalny katalog może
     zawierać więcej niż lokalny."""
-    cel = f"{RCLONE_REMOTE}/{podkatalog}"
+    target = f"{RCLONE_REMOTE}/{subpath}"
 
-    cp = _run(["copy", str(lokalny), cel, *_OPCJE_COPY])
-    if cp.returncode != 0:
-        logger.error(f"rclone copy {lokalny} → {cel} nieudane "
-                     f"(rc={cp.returncode}): {cp.stderr.strip()[:400]}")
+    copied = _run(["copy", str(local), target, *_COPY_OPTS])
+    if copied.returncode != 0:
+        logger.error(f"rclone copy {local} → {target} nieudane "
+                     f"(rc={copied.returncode}): {copied.stderr.strip()[:400]}")
         return False
 
-    ck = _run(["check", str(lokalny), cel, "--checksum", "--one-way"])
-    if ck.returncode != 0:
-        logger.error(f"rclone check {lokalny} → {cel} NIEZGODNE "
-                     f"(rc={ck.returncode}): {ck.stderr.strip()[:400]}")
+    checked = _run(["check", str(local), target, "--checksum", "--one-way"])
+    if checked.returncode != 0:
+        logger.error(f"rclone check {local} → {target} NIEZGODNE "
+                     f"(rc={checked.returncode}): {checked.stderr.strip()[:400]}")
         return False
 
-    logger.success(f"{lokalny} → {cel}: wysłane i zweryfikowane")
+    logger.success(f"{local} → {target}: wysłane i zweryfikowane")
     return True
 
 
-def dostepny() -> bool:
-    """Sprawdza, czy rclone w ogóle działa i zna skonfigurowany remote."""
-    r = _run(["listremotes"])
-    if r.returncode != 0:
-        logger.error(f"rclone niedostępny: {r.stderr.strip()[:200]}")
+def available() -> bool:
+    """Sprawdza, czy rclone działa i zna skonfigurowany remote."""
+    result = _run(["listremotes"])
+    if result.returncode != 0:
+        logger.error(f"rclone niedostępny: {result.stderr.strip()[:200]}")
         return False
     remote = RCLONE_REMOTE.split(":", 1)[0] + ":"
-    if remote not in r.stdout:
+    if remote not in result.stdout:
         logger.error(f"Remote {remote} nie jest skonfigurowany. "
-                     f"Dostępne: {r.stdout.split() or 'brak'}")
+                     f"Dostępne: {result.stdout.split() or 'brak'}")
         return False
     return True

@@ -48,11 +48,11 @@ UPLOAD_QUIET_MIN = int(os.getenv("GTFS_UPLOAD_QUIET_MIN", "10"))
 
 # MUSI być większe niż start_offset agregatów w CA.sql (6h) i pokrywać całą
 # eksportowaną dobę D-1. Skrócenie poniżej start_offset kasuje agregaty.
-FAKTY_RETENCJA_H = int(os.getenv("GTFS_FAKTY_RETENCJA_H", "48"))
+FACTS_RETENTION_H = int(os.getenv("GTFS_FACTS_RETENTION_H", "48"))
 
 HEALTHCHECK_URL = os.getenv("GTFS_HEALTHCHECK_URL", "")
 MIN_FREE_GB = float(os.getenv("GTFS_MIN_FREE_GB", "15"))
-MAX_ETL_CISZA_MIN = float(os.getenv("GTFS_MAX_ETL_CISZA_MIN", "5"))
+MAX_ETL_SILENCE_MIN = float(os.getenv("GTFS_MAX_ETL_SILENCE_MIN", "5"))
 MAX_STAGING_H = float(os.getenv("GTFS_MAX_STAGING_H", "3"))
 MAX_NIGHTLY_H = float(os.getenv("GTFS_MAX_NIGHTLY_H", "26"))
 
