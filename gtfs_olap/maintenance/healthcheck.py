@@ -1,10 +1,7 @@
 """Monitoring kolektora i łańcucha archiwizacji.
 
-Sprawdza: czy kolektor zapisuje, czy staging nie rośnie, czy jest wolne
-miejsce, czy zadanie nocne domknęło się w ciągu doby.
-
-Ping leci TYLKO przy spełnieniu wszystkich warunków - brak pingu jest
-sygnałem, dzięki czemu wykrywalna jest też awaria samego healthchecka.
+Ping leci TYLKO gdy wszystko gra. Brak pingu jest sygnałem - dzięki temu
+wykrywalny jest też pad samego healthchecka.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ from gtfs_olap.maintenance.nightly import MARKER
 
 
 def _existing_dir(path: Path) -> Path:
-    """disk_usage wymaga istniejącej ścieżki."""
+    # disk_usage wywala się na nieistniejącej ścieżce.
     while not path.exists() and path != path.parent:
         path = path.parent
     return path
@@ -51,8 +48,7 @@ def _check_collector() -> str | None:
 
 
 def _system_age_h() -> float | None:
-    """Ile godzin zbiera system - odróżnia 'nocne padło' od 'jeszcze
-    niewymagalne'."""
+    """Odróżnia "nocne padło" od "jeszcze niewymagalne"."""
     try:
         with psycopg.connect(DB_URL, connect_timeout=10) as conn, conn.cursor() as cur:
             cur.execute("SELECT EXTRACT(EPOCH FROM (now() - min(started_at))) "

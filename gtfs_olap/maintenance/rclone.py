@@ -1,4 +1,4 @@
-"""Cienka warstwa nad rclone - jedyna bramka przed kasowaniem danych lokalnie."""
+"""Warstwa nad rclone. Jedyna bramka przed kasowaniem danych lokalnie."""
 
 from __future__ import annotations
 
@@ -25,11 +25,8 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def upload_and_verify(local: Path, subpath: str) -> bool:
-    """Wysyła katalog i potwierdza zgodność sumami kontrolnymi.
-
-    True dopiero po udanym `rclone check`. Kod wyjścia samego `copy` nie
-    wystarcza jako podstawa do kasowania. --one-way, bo zdalny katalog może
-    zawierać więcej niż lokalny."""
+    """True dopiero po udanym `rclone check`. Kod wyjścia samego `copy` nie
+    wystarcza - potrafi zwrócić zero przy częściowo przesłanych plikach."""
     target = f"{RCLONE_REMOTE}/{subpath}"
 
     copied = _run(["copy", str(local), target, *_COPY_OPTS])
@@ -49,7 +46,6 @@ def upload_and_verify(local: Path, subpath: str) -> bool:
 
 
 def available() -> bool:
-    """Sprawdza, czy rclone działa i zna skonfigurowany remote."""
     result = _run(["listremotes"])
     if result.returncode != 0:
         logger.error(f"rclone niedostępny: {result.stderr.strip()[:200]}")

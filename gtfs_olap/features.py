@@ -1,18 +1,14 @@
-"""Moduł B: potok cech z rozdz. 8 specyfikacji.
+"""Wyliczanie cech na okno 15-minutowe dla każdego klienta federacji.
 
-Wejście to Parquety surowych faktów i lookup_schedule z archiwum na Drive,
-wyjście to macierz cech na okno 15-minutowe dla każdego klienta federacji.
+Wejście: Parquety surowych faktów i lookup_schedule z archiwum.
+Wyjście: macierz cech gotowa do podania modelowi.
 
-ODCHYŁKA OD SPECYFIKACJI, cecha h(t). Rozdz. 8 definiuje ją jako odchylenie
-standardowe odstępów między kolejnymi przyjazdami kursów tej samej linii.
-Zmierzone na danych: w oknie 15-minutowym tylko 0,1% par (linia, przystanek)
-ma trzy przyjazdy potrzebne do policzenia odchylenia, a w oknie godzinnym
-9,8%. Definicja jest więc niepoliczalna w zadanej granulacji.
-
-Zamiast tego liczymy odstępy między rzeczywistymi odjazdami kursów tej samej
-linii i kierunku, sprowadzonymi do wspólnego punktu odniesienia (pierwszy
-przystanek kursu), w oknie 60 minut kończącym się na bieżącym kwadransie.
-Przy tej definicji komplet danych ma 42,4% grup, a pokrycie wyniku 93,1% okien.
+UWAGA na h(t). Specyfikacja definiuje ją jako odchylenie standardowe odstępów
+między przyjazdami tej samej linii. Na danych ZTM to nie wychodzi - w oknie
+15-minutowym tylko 0,1% par (linia, przystanek) ma trzy przyjazdy potrzebne do
+odchylenia. Liczymy więc odstępy między odjazdami na poziomie (linia, kierunek),
+sprowadzone do pierwszego przystanku, w oknie kroczącym 60 minut. Wtedy komplet
+ma 42% grup, a pokrycie wyniku 93% okien.
 """
 
 from __future__ import annotations
@@ -25,12 +21,11 @@ import pandas as pd
 
 from gtfs_olap.clients import OPERATOR_TO_CLIENT
 
-# Ten sam próg co w CA.sql - artefakty ZTM rzędu 195 godzin zaburzyłyby
-# średnią w oknie silniej niż anomalie, które model ma wykrywać.
+# Ten sam próg co w CA.sql. ZTM potrafi podać opóźnienie rzędu 195 godzin -
+# jeden taki wiersz przesuwa średnią w oknie bardziej niż realna anomalia.
 DELAY_MIN = -3600
 DELAY_MAX = 7200
 
-# Rozdz. 8: za punktualne uznaje się opóźnienie od -30 do 60 sekund.
 ON_TIME_MIN = -30
 ON_TIME_MAX = 60
 
@@ -45,7 +40,7 @@ FEATURES = ["d", "w", "dmax", "n", "p", "delta_d", "r", "h",
 
 
 def _to_seconds(value: pd.Series) -> pd.Series:
-    """'25:30:00' -> 91800. GTFS koduje kursy nocne godzinami >= 24."""
+    # GTFS koduje kursy nocne godzinami >= 24, np. "25:30:00".
     parts = value.str.split(":", expand=True).astype("float64")
     return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
@@ -58,7 +53,6 @@ def _read_parquet_tree(directory: str | Path, label: str) -> pd.DataFrame:
 
 
 def load_facts(directory: str | Path) -> pd.DataFrame:
-    """Surowe fakty ze wszystkich dobowych Parquetów, z przypisanym klientem."""
     df = _read_parquet_tree(directory, "fakty")
     df["client"] = df["operator_id"].map(OPERATOR_TO_CLIENT)
     unmapped = df["client"].isna().sum()
@@ -69,8 +63,8 @@ def load_facts(directory: str | Path) -> pd.DataFrame:
 
 
 def load_lookup(directory: str | Path) -> pd.DataFrame:
-    """lookup_schedule zredukowany do pierwszego przystanku każdego kursu -
-    to punkt odniesienia dla odstępów między kursami."""
+    """Rozkład zredukowany do pierwszego przystanku kursu - punkt odniesienia
+    dla odstępów między kursami."""
     df = _read_parquet_tree(directory, "lookup")
     df = df.sort_values("stop_sequence").drop_duplicates(["wersja_id", "trip_id"])
     df["departure_s"] = _to_seconds(df["rozkladowy_przyjazd"])
@@ -78,7 +72,6 @@ def load_lookup(directory: str | Path) -> pd.DataFrame:
 
 
 def primary_quantities(facts: pd.DataFrame) -> pd.DataFrame:
-    """n(t), S(t), q(t), u(t) i ekstrema na (klient, okno) - rozdz. 8."""
     observed = facts["status"] == "OBSERWACJA"
     valid = observed & facts["opoznienie_s"].between(DELAY_MIN, DELAY_MAX)
 
@@ -101,10 +94,9 @@ def primary_quantities(facts: pd.DataFrame) -> pd.DataFrame:
 
 
 def headway_irregularity(facts: pd.DataFrame, lookup: pd.DataFrame) -> pd.DataFrame:
-    """h(t) - patrz odchyłka opisana w docstringu modułu."""
     observed = facts[facts["status"] == "OBSERWACJA"]
-    # Jedno opóźnienie na kurs: mediana po wszystkich jego obserwacjach jest
-    # odporniejsza niż pojedynczy odczyt.
+    # Feed raportuje ten sam kurs kilkanaście razy - mediana zamiast
+    # pojedynczego odczytu.
     trips = (observed.groupby(
         ["wersja_id", "trip_id", "client", "linia_id", "kierunek", "data_kursu"],
         observed=True)["opoznienie_s"].median().reset_index())
@@ -121,8 +113,7 @@ def headway_irregularity(facts: pd.DataFrame, lookup: pd.DataFrame) -> pd.DataFr
     trips = trips.dropna(subset=["headway_s"])
     trips["window"] = trips["departure"].dt.floor(WINDOW)
 
-    # Okno kroczące: każdy odstęp trafia do kolejnych kwadransów objętych
-    # oknem HEADWAY_WINDOW_MIN, licząc od tego, w którym nastąpił odjazd.
+    # Okno kroczące: odstęp liczy się do kilku kolejnych kwadransów.
     shifts = [pd.Timedelta(minutes=15 * i) for i in range(HEADWAY_WINDOW_MIN // 15)]
     expanded = pd.concat(
         [trips.assign(window=trips["window"] + s) for s in shifts], ignore_index=True)
@@ -137,10 +128,8 @@ def headway_irregularity(facts: pd.DataFrame, lookup: pd.DataFrame) -> pd.DataFr
 
 
 def time_grid(df: pd.DataFrame) -> pd.DataFrame:
-    """Pełna siatka 15-minutowa dla każdego klienta.
-
-    Bez niej brakujące okna byłyby niewidoczne, a sekwencje wejściowe modelu
-    sklejałyby obserwacje po obu stronach luki."""
+    """Pełna siatka co 15 minut - bez niej sekwencje sklejałyby dane po obu
+    stronach przerwy w zbieraniu."""
     windows = pd.date_range(df["window"].min(), df["window"].max(), freq=WINDOW, tz=TZ)
     clients = sorted(df["client"].unique())
     return pd.MultiIndex.from_product(
@@ -148,10 +137,8 @@ def time_grid(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def daily_profile(df: pd.DataFrame) -> pd.DataFrame:
-    """Mediana d wg godziny doby i typu dnia - podstawa cechy r(t).
-
-    Rozdz. 8 wymaga, żeby profil był liczony WYŁĄCZNIE na danych treningowych,
-    inaczej informacja o zbiorze testowym przecieka do cechy."""
+    """Mediana d wg godziny i typu dnia. Liczyć TYLKO na treningu, inaczej
+    zbiór testowy przecieka do cechy r(t)."""
     return (df.dropna(subset=["d"])
             .groupby(["client", "hour", "workday"], observed=True)["d"]
             .median().reset_index(name="m"))
@@ -159,7 +146,6 @@ def daily_profile(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_features(facts_dir: str | Path, lookup_dir: str | Path,
                    dim_data: pd.DataFrame) -> pd.DataFrame:
-    """Pełna macierz cech na (klient, okno)."""
     facts = load_facts(facts_dir)
     lookup = load_lookup(lookup_dir)
 
@@ -169,8 +155,8 @@ def build_features(facts_dir: str | Path, lookup_dir: str | Path,
     df = df.merge(headway_irregularity(facts, lookup),
                   on=["client", "window"], how="left")
 
-    # Okno bez obserwacji nie ma sensownego d ani w - zostaje NaN i jest
-    # oznaczone jako niekompletne, żeby budowniczy sekwencji je odrzucił.
+    # Okno bez obserwacji nie ma sensownego d ani w. Zostaje NaN i flaga,
+    # po której budowniczy sekwencji je odrzuci.
     empty = df["n"] == 0
     df["complete"] = ~empty
     df["d"] = np.where(empty, np.nan, df["S"] / df["n"])
@@ -180,8 +166,7 @@ def build_features(facts_dir: str | Path, lookup_dir: str | Path,
 
     df["date"] = df["window"].dt.date
     df["hour"] = df["window"].dt.hour
-    day_types = dim_data.set_index("data")["typ_dnia"]
-    df["day_type"] = df["date"].map(day_types)
+    df["day_type"] = df["date"].map(dim_data.set_index("data")["typ_dnia"])
     df["workday"] = (df["day_type"].fillna("")
                      .str.startswith("dni robocze").astype(int))
 
@@ -195,34 +180,29 @@ def build_features(facts_dir: str | Path, lookup_dir: str | Path,
 
 
 def add_profile_deviation(df: pd.DataFrame, profile: pd.DataFrame) -> pd.DataFrame:
-    """r(t) = d(t) - m(godzina, typ dnia), z profilu treningowego."""
     out = df.merge(profile, on=["client", "hour", "workday"], how="left")
     out["r"] = out["d"] - out["m"]
     return out.drop(columns=["m"])
 
 
 def scaling_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """Średnia i odchylenie każdej cechy, osobno dla klienta (rozdz. 7.2)."""
     stats = df.groupby("client", observed=True)[FEATURES].agg(["mean", "std"])
     stats.columns = [f"{col}_{stat}" for col, stat in stats.columns]
     return stats.reset_index()
 
 
 def standardize(df: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
-    """Standaryzacja per klient. NaN-y (puste okna, brak h) -> 0, czyli
-    średnia rozkładu treningowego."""
     out = df.merge(stats, on="client", how="left")
     for feature in FEATURES:
         sd = out[f"{feature}_std"].replace(0, np.nan)
+        # NaN (puste okno, brak h) -> 0, czyli średnia rozkładu treningowego.
         out[feature] = ((out[feature] - out[f"{feature}_mean"]) / sd).fillna(0.0)
     return out.drop(columns=[f"{f}_{s}" for f in FEATURES for s in ("mean", "std")])
 
 
 def sequences(df: pd.DataFrame, length: int = 8) -> tuple[np.ndarray, pd.DataFrame]:
-    """Sekwencje wejściowe modelu: X(t) z okien t-(length-1) .. t.
-
-    Sekwencje przecinające lukę w zbieraniu są odrzucane, zgodnie z regułą
-    z rozdz. 4.2. Zwraca tablicę (próbki, length, cechy) i opis próbek."""
+    """Okna t-(length-1)..t. Sekwencje przecinające przerwę w zbieraniu
+    są odrzucane."""
     windows, labels = [], []
     for client, group in df.sort_values("window").groupby("client", observed=True):
         values = group[FEATURES].to_numpy(dtype="float32")

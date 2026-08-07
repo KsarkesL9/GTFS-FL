@@ -1,8 +1,6 @@
-"""Weryfikacja poprawności potoku cech i federacji.
+"""Sprawdza niezmienniki potoku cech i agregacji federacyjnej.
 
-Sprawdza własności, które muszą zachodzić, żeby wyniki eksperymentów były
-wiarygodne. Uruchamiać po każdej zmianie w features.py, model.py lub
-federation.py.
+Uruchamiać po każdej zmianie w features.py, model.py lub federation.py.
 
     python scripts/verify_pipeline.py
 """

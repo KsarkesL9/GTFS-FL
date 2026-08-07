@@ -1,10 +1,10 @@
-"""Budowa macierzy cech dla klientów federacji (Moduł B, rozdz. 7.2).
+"""Budowa macierzy cech dla klientów federacji.
 
-Czyta Parquety z archiwum, liczy cechy z rozdz. 8, dzieli zbiór czasowo,
-standaryzuje osobno dla każdego klienta i zapisuje sekwencje wejściowe.
+Czyta Parquety z archiwum, liczy cechy, dzieli zbiór czasowo, standaryzuje
+osobno dla klienta i zapisuje sekwencje wejściowe.
 
-Profil dobowy i statystyki standaryzacji liczone są WYŁĄCZNIE na części
-treningowej - inaczej informacja o zbiorze testowym przecieka do cech.
+Profil dobowy i statystyki standaryzacji liczone TYLKO na treningu - inaczej
+zbiór testowy przecieka do cech.
 
     python scripts/build_features.py --data dane --out cechy
     python scripts/build_features.py --train-share 0.7 --sequence-length 8

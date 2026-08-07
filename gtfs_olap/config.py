@@ -25,7 +25,7 @@ RT_URL = os.getenv(
     "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/tripUpdates",
 )
 
-# Wyłącznie archiwizowany, nigdy parsowany do bazy (decyzja D1).
+# Tylko archiwizujemy - do bazy nie trafia.
 VP_URL = os.getenv(
     "GTFS_VP_URL",
     "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/vehiclePositions",
@@ -43,11 +43,10 @@ STATE_DIR = Path(os.getenv("GTFS_STATE_DIR", "/data/state"))
 RCLONE_BIN = os.getenv("GTFS_RCLONE_BIN", "rclone")
 RCLONE_REMOTE = os.getenv("GTFS_RCLONE_REMOTE", "gdrive:gtfs-olap")
 
-# Katalog gotowy do wysyłki, gdy nic w nim nie przybyło od tylu minut.
+# Katalog gotowy do wysyłki po tylu minutach ciszy.
 UPLOAD_QUIET_MIN = int(os.getenv("GTFS_UPLOAD_QUIET_MIN", "10"))
 
-# MUSI być większe niż start_offset agregatów w CA.sql (6h) i pokrywać całą
-# eksportowaną dobę D-1. Skrócenie poniżej start_offset kasuje agregaty.
+# MUSI być > start_offset agregatów w CA.sql (6h) i pokrywać dobę D-1.
 FACTS_RETENTION_H = int(os.getenv("GTFS_FACTS_RETENTION_H", "48"))
 
 HEALTHCHECK_URL = os.getenv("GTFS_HEALTHCHECK_URL", "")
@@ -68,9 +67,9 @@ WEEKDAY_COLS = ["monday", "tuesday", "wednesday", "thursday",
 
 DIM_DATA_LOOKBACK_DAYS = 35
 
-# GZM używa tych samych service_id w różnych paczkach do oznaczenia różnych
-# rzeczy, więc klucz dedup dla calendar i service_ext musi obejmować pełen
-# rekord. Inaczej tracimy 7 z 10 wpisów kalendarza.
+# UWAGA na ID z GZM: te same service_id w różnych paczkach znaczą co innego,
+# więc dedup calendar i service_ext musi brać pełen rekord. Inaczej gubimy
+# 7 z 10 wpisów kalendarza.
 DEDUP_KEYS = {
     "agency": ["agency_id"],
     "routes": ["route_id"],

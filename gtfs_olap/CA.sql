@@ -1,11 +1,6 @@
--- Migracja definicji agregatów.
---
 -- CREATE MATERIALIZED VIEW IF NOT EXISTS po cichu pomija zmienioną definicję,
--- więc bez tego bloku zmiany poniższych zapytań nie dotarłyby na działającą bazę.
---
+-- więc bez tego bloku poprawki nie dotarłyby na działającą bazę.
 -- UWAGA: podniesienie wersji KASUJE zmaterializowaną historię agregatów.
--- Przy retencji faktów 48 h odtworzenie jej wymaga przeliczenia Parquetów
--- z Drive poza bazą.
 DO $migracja$
 DECLARE
     wersja_docelowa INT := 2;   -- 2: filtr sensowności opóźnień (-1h/+2h)
@@ -35,13 +30,10 @@ END
 $migracja$;
 
 
--- Agregat bazowy: okno 15 minut na linię i operatora.
---
--- Filtr sensowności -3600..7200 s: ZTM publikuje sporadycznie opóźnienia rzędu
--- 195 godzin. Jeden taki wiersz przesuwa średnią w oknie o ~700 s, czyli
--- kilkukrotnie więcej niż amplituda anomalii, którą model ma wykrywać.
--- Filtr obejmuje też licznik, żeby suma i mianownik liczyły się na tym samym
--- zbiorze. Kolumna odrzucone czyni filtrowanie policzalnym.
+-- Okno 15 minut na linię i operatora.
+-- Filtr -3600..7200 s: ZTM potrafi podać opóźnienie rzędu 195 godzin, a jeden
+-- taki wiersz przesuwa średnią w oknie o ~700 s. Filtr obejmuje też licznik,
+-- żeby suma i mianownik liczyły się na tym samym zbiorze.
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_15min
 WITH (timescaledb.continuous) AS
 SELECT
@@ -70,8 +62,8 @@ FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, linia_id, operator_id
 WITH NO DATA;
 
--- start_offset MUSI być krótszy niż retencja surowych faktów (48h): odświeżenie
--- zakresu bez surowych danych przelicza kubełki z pustki i kasuje poprawne wiersze.
+-- start_offset MUSI być krótszy niż retencja faktów (48h) - odświeżenie zakresu
+-- bez surowych danych wyzeruje poprawne wiersze agregatu.
 -- remove_* przed add_*, bo add_*(if_not_exists=>true) nie zmienia istniejącej polityki.
 SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min',
     if_not_exists => true);
@@ -166,23 +158,17 @@ SELECT add_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
     end_offset        => INTERVAL '10 minutes',
     schedule_interval => INTERVAL '5 minutes');
 
--- Retencja.
---
--- Na fakt_opoznienia i fakt_etl_run NIE WOLNO dodawać polityki retencji -
--- kasuje ślepo, według zegara, niezależnie od tego, czy dane dotarły na Drive.
--- Kasowaniem steruje maintenance/nightly.py jawnym drop_chunks() po
--- zweryfikowanym uploadzie. Poniższe remove_* usuwają polityki 30/90-dniowe
--- z wcześniejszych wersji tego pliku.
---
--- (remove_retention_policy używa if_exists, remove_continuous_aggregate_policy
---  if_not_exists - to niespójność API TimescaleDB, nie literówka.)
+-- Na fakt_opoznienia i fakt_etl_run NIE dodawać polityki retencji - kasuje
+-- według zegara, nie sprawdzając, czy dane dotarły na Drive. Robi to
+-- nightly.py przez drop_chunks() po zweryfikowanym uploadzie.
+-- Poniższe remove_* czyszczą polityki 30/90-dniowe z wcześniejszych wersji.
+-- (if_exists vs if_not_exists to niespójność API TimescaleDB, nie literówka.)
 SELECT remove_retention_policy('fakt_opoznienia', if_exists => true);
 SELECT remove_retention_policy('fakt_etl_run', if_exists => true);
 
--- Agregat przystankowy zasila tylko wizualizacje, nie jest wejściem modelu,
--- a jest ~10x większy od 15-minutowego. Tu ślepa retencja jest bezpieczna.
+-- Zasila tylko wizualizacje, nie model, a waży ~10x więcej niż 15-minutowy.
+-- Tu retencja według zegara jest bezpieczna.
 SELECT remove_retention_policy('ca_opoznienia_15min_przystanek', if_exists => true);
 SELECT add_retention_policy('ca_opoznienia_15min_przystanek', INTERVAL '14 days');
 
--- _15min, _1h i _dzien zostają bez retencji - razem ~300 MB, a to bezpośrednie
--- źródło wektora cech. _1h i _dzien czytają z _15min, nie z surowych faktów.
+-- _15min, _1h i _dzien bez retencji - to źródło wektora cech, razem ~300 MB.

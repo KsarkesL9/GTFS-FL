@@ -34,10 +34,10 @@ class FeedMeta:
     feed_end_date: date
 
 
-# Numer w nazwie ZIP-a nie odpowiada datom obowiązywania, a każda paczka
-# pokrywa tylko wycinek kalendarza (1-10 dni) - rzeczywisty okres jest wyłącznie
-# w feed_info.txt wewnątrz archiwum. Stąd: ściągamy kolejno i sprawdzamy okres,
-# aż pokryjemy horyzont. Zwykle 7-9 paczek po ~10 MB.
+# UWAGA na paczki GZM: numer w nazwie ZIP-a nie mówi nic o datach
+# obowiązywania, a każda pokrywa tylko wycinek kalendarza. Prawdziwy okres jest
+# w feed_info.txt w środku. Ściągamy więc kolejno, aż pokryjemy horyzont -
+# zwykle 7-9 paczek po ~10 MB.
 
 def _fetch_active_packages(dest: Path, horizon_days: int = 14) -> list[Path]:
     """Pobiera paczki pokrywające okres [dziś, dziś + horizon_days]."""
@@ -262,10 +262,8 @@ def _copy_df(conn, table: str, df: pd.DataFrame, cols: list[str]):
 
 def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str],
                set_overrides: dict[str, str] | None = None):
-    """COPY do tabeli tymczasowej, potem INSERT ... ON CONFLICT (pk) DO UPDATE.
-
-    TRUNCATE odpada, bo fakt_opoznienia ma FK do wymiarów. set_overrides
-    podmienia wyrażenie po prawej stronie SET dla wybranej kolumny."""
+    """COPY do tabeli tymczasowej, potem UPSERT. TRUNCATE odpada, bo fakty mają
+    FK do wymiarów. set_overrides podmienia prawą stronę SET dla kolumny."""
     set_overrides = set_overrides or {}
     stg = f"_stg_{table}"
     assignments = []
@@ -292,10 +290,8 @@ LOOKUP_COLS = ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
 
 
 def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
-    """SHA-256 treści rozkładu, niezależny od kolejności wierszy.
-
-    Nowa wersja powstaje tylko przy realnej zmianie: dim_wersja_rozkladu pełni
-    rolę rejestru momentów dryfu, więc wersje generowane cronem byłyby szumem."""
+    """SHA-256 treści, niezależny od kolejności wierszy. Nowa wersja powstaje
+    tylko przy realnej zmianie - inaczej codzienny cron zaśmieciłby rejestr."""
     cols = [c for c in LOOKUP_COLS if c != "wersja_id"]
     ordered = lookup[cols].sort_values(cols, kind="mergesort")
     return hashlib.sha256(
@@ -304,8 +300,8 @@ def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
 
 
 def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
-    """Zrzut lookup_schedule do archiwum - bez niego nie odtworzysz mapowania
-    kurs -> operator z danego momentu po skasowaniu wersji z bazy."""
+    """Bez tego zrzutu nie odtworzysz mapowania kurs -> operator po skasowaniu
+    wersji z bazy."""
     out = (RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
            / f"lookup_schedule_w{wersja_id}.parquet")
     write_atomic(out, lambda target: lookup.to_parquet(
@@ -314,8 +310,7 @@ def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
 
 
 def _archive_packages(zip_paths: list[Path], dzien: date):
-    """Kopiuje paczki do archiwum - CKAN GZM rotuje zasoby i po kilku
-    tygodniach znikają z platformy."""
+    """CKAN GZM rotuje zasoby - po kilku tygodniach paczki znikają."""
     dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
     skopiowane = 0
     for zp in zip_paths:
@@ -328,8 +323,8 @@ def _archive_packages(zip_paths: list[Path], dzien: date):
 
 
 def _prune_lookup_schedule(conn, aktywna_wersja: int):
-    """Zostawia wersję aktywną (ładuje ją cache RT) i te, do których odwołują
-    się fakty w oknie retencji. Reszta jest już w Parquecie na Drive."""
+    """Zostawia wersję aktywną i te, do których odwołują się fakty w oknie
+    retencji. Reszta jest w Parquecie na Drive."""
     with conn.cursor() as cur:
         cur.execute("""
             DELETE FROM lookup_schedule
@@ -393,9 +388,9 @@ def _load_to_db(dims: dict, lookup: pd.DataFrame, meta: FeedMeta):
                    ["operator_id", "nazwa"],
                    ["operator_id"])
 
-        # NIE upraszczać do EXCLUDED.typ_dnia. Paczki pokrywają tylko
-        # [dziś, dziś+13], więc dla dat przeszłych _build_dim_data zwraca
-        # 'brak rozkładu' - bezwarunkowy UPSERT nadpisywałby tym całą historię.
+        # HACK: nie upraszczać do EXCLUDED.typ_dnia. Paczki pokrywają tylko
+        # [dziś, dziś+13], więc dla dat przeszłych wychodzi "brak rozkładu"
+        # i bezwarunkowy UPSERT zamazałby całą historię.
         _upsert_df(conn, "dim_data", dims["data"],
                    ["data", "rok", "miesiac", "tydzien_iso", "dzien_tygodnia", "nazwa_dnia", "typ_dnia"],
                    ["data"],

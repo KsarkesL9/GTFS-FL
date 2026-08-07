@@ -1,8 +1,6 @@
-"""Zadanie nocne: odśwież agregaty → eksport → wysyłka → weryfikacja →
-dopiero wtedy kasowanie surowych faktów.
+"""Zadanie nocne: agregaty -> eksport -> wysyłka -> weryfikacja -> kasowanie.
 
-KOLEJNOŚCI NIE WOLNO ZMIENIAĆ. Każdy nieudany krok przerywa zadanie i zostawia
-dane nietknięte.
+KOLEJNOŚCI NIE ZMIENIAĆ. Każdy nieudany krok przerywa zadanie i zostawia dane.
 """
 
 from __future__ import annotations
@@ -22,11 +20,11 @@ MARKER = "nightly_ok"
 
 
 def _refresh_aggregates(day: date) -> None:
-    """Materializuje agregaty za eksportowaną dobę, zanim surowe fakty znikną.
+    """Materializuje agregaty, zanim surowe fakty znikną.
 
-    Okno musi mieścić się w retencji surowych faktów: odświeżenie zakresu,
-    z którego chunki już usunięto, kasuje poprawne wiersze agregatu.
-    Autocommit wymagany przez TimescaleDB."""
+    Okno musi się mieścić w retencji faktów - odświeżenie zakresu bez surowych
+    chunków wyzeruje poprawne wiersze agregatu. Autocommit wymusza TimescaleDB.
+    """
     start = datetime.combine(day, dtime.min, tzinfo=TZ) - timedelta(hours=1)
     end = datetime.now(TZ) - timedelta(minutes=10)
     with psycopg.connect(DB_URL, autocommit=True) as conn, conn.cursor() as cur:
@@ -37,8 +35,8 @@ def _refresh_aggregates(day: date) -> None:
 
 
 def _drop_old_facts() -> int:
-    """Jawne drop_chunks zamiast polityki retencji, która kasowałaby według
-    zegara niezależnie od tego, czy dane dotarły na Drive."""
+    """Jawne drop_chunks zamiast polityki retencji - ta kasowałaby według
+    zegara, nie sprawdzając, czy dane dotarły na Drive."""
     with psycopg.connect(DB_URL, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT drop_chunks('fakt_opoznienia', older_than => %s::interval)",
@@ -50,7 +48,7 @@ def _drop_old_facts() -> int:
 
 
 def _clean_export(day: date) -> None:
-    """Usuwa lokalne kopie wyeksportowanych dób. Katalog wymiary/ zostaje."""
+    # wymiary/ zostają - są małe i nadpisywane co noc.
     for family in ("fakty", "ca_15min", "etl_run"):
         directory = EXPORT_DIR / family / f"dt={day:%Y-%m-%d}"
         if directory.exists():

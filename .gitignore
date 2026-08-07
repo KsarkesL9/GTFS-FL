@@ -5,40 +5,35 @@ __pycache__/
 *.egg
 dist/
 build/
-
-# Virtual environment
 .venv/
 
-# Environment variables
+# Sekrety i konfiguracja lokalna
 .env
+.env.*
+!.env.example
+secrets/
 
-# IDE
+# IDE i asystenci
 .vscode/
 .idea/
+.claude/
+.gemini/
+.cursor/
+.aider*
 *.swp
 
 # OS
 Thumbs.db
 .DS_Store
 
-# Dane tymczasowe ETL (ZIP-y, rozpakowane paczki)
-*.zip
-tmp/
-
-# Poświadczenia rclone / Google Drive - NIGDY do repozytorium
-secrets/
-
-# Archiwum surowe, eksporty i stan lokalny (bind-mount /data na VPS)
+# Dane: archiwum, eksporty, artefakty modelu
 data/
-*.pb.gz
-*.parquet
-*.pbix
-kepler.gl.html
-
-
-# Dane robocze potoku cech
 dane/
 cechy/
-*.dump
 wyniki/
-.venv/
+tmp/
+*.zip
+*.dump
+*.parquet
+*.pb.gz
+*.pbix

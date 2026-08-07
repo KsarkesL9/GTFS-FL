@@ -1,11 +1,7 @@
-"""Autoenkoder rekurencyjny do detekcji anomalii (rozdz. 2.2 i 8.1).
+"""Autoenkoder GRU. Uczy się odtwarzać typowy ruch; błąd rekonstrukcji
+jest wskaźnikiem anomalności.
 
-Enkoder GRU sprowadza okno ośmiu kwadransów do reprezentacji ukrytej, dekoder
-odtwarza z niej wejście. Błąd rekonstrukcji e(t) jest wskaźnikiem anomalności:
-próbki odbiegające od nauczonego wzorca odtwarzają się źle.
-
-GRU zamiast LSTM - rozdz. 6.1 dopuszcza oba, a GRU ma o jedną bramkę mniej,
-co przy treningu na procesorze (rozdz. 9.1) ma znaczenie.
+GRU zamiast LSTM - o jedną bramkę mniej, a trenujemy na procesorze.
 """
 
 from __future__ import annotations
@@ -26,8 +22,6 @@ class GRUAutoencoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _, state = self.encoder(x)
-        # Reprezentacja ukryta powielona na całą długość sekwencji - dekoder
-        # odtwarza wszystkie kwadranse z jednego wektora kontekstu.
         context = state[-1].unsqueeze(1).repeat(1, x.size(1), 1)
         decoded, _ = self.decoder(context)
         return self.output(decoded)
@@ -38,7 +32,7 @@ class GRUAutoencoder(nn.Module):
 
 def reconstruction_errors(model: nn.Module, X: np.ndarray,
                           batch: int = 256) -> np.ndarray:
-    """e(t) dla każdej próbki: MSE uśredniony po cechach i kwadransach."""
+    """MSE na próbkę, uśredniony po cechach i kwadransach."""
     model.eval()
     out = []
     with torch.no_grad():
@@ -50,18 +44,14 @@ def reconstruction_errors(model: nn.Module, X: np.ndarray,
 
 def alarm_threshold(errors: np.ndarray,
                     percentile: float = DEFAULT_PERCENTILE) -> float:
-    """Próg z percentyla rozkładu błędów na zbiorze walidacyjnym (rozdz. 8.1)."""
     return float(np.percentile(errors, percentile)) if len(errors) else float("inf")
 
 
 def train(model: nn.Module, X: np.ndarray, epochs: int = 20, batch: int = 64,
           lr: float = 1e-3, mu: float = 0.0,
           global_weights: list[np.ndarray] | None = None) -> float:
-    """Trening lokalny. Zwraca średnią stratę z ostatniej epoki.
-
-    mu > 0 włącza składnik proksymalny FedProx: kara za oddalanie się wag
-    lokalnych od modelu globalnego, łagodząca skutki niejednorodności
-    klientów (rozdz. 2.1)."""
+    """Zwraca stratę z ostatniej epoki. mu > 0 dokłada człon proksymalny
+    FedProx, karzący oddalanie się od modelu globalnego."""
     if len(X) == 0:
         return float("nan")
     model.train()

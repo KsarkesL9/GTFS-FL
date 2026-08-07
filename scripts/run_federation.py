@@ -1,7 +1,7 @@
-"""Test integracyjny symulacji federacji (kamień milowy tygodnia 1).
+"""Trening federacyjny wybraną strategią, z porównaniem do modeli lokalnych.
 
-Wczytuje sekwencje z potoku cech, uruchamia trening federacyjny wybraną
-strategią i porównuje go z modelami czysto lokalnymi.
+Budżet treningowy obu wariantów jest wyrównany - inaczej porównanie mierzy
+liczbę epok, a nie wartość federacji.
 
     python scripts/run_federation.py --strategy fedavg --rounds 5
     python scripts/run_federation.py --strategy fedprox --mu 0.1

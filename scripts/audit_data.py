@@ -1,8 +1,8 @@
 """Audyt jakości danych: co łapiemy, co gubimy, czy trafia do właściwych kolumn.
 
-Pobiera świeżą migawkę i liczy, ile encji odrzucamy i dlaczego (_process_feed
-cicho pomija zatrzymania bez dopasowania w rozkładzie), a następnie sprawdza
-rozkłady wartości w bazie, zakresy i dobę operacyjną.
+Pobiera świeżą migawkę i liczy odrzuty (_process_feed po cichu pomija
+zatrzymania bez dopasowania w rozkładzie), potem sprawdza rozkłady wartości
+w bazie i dobę operacyjną.
 
     python scripts/audit_data.py
 """

@@ -1,4 +1,4 @@
-"""Wysyłka archiwum surowego na Drive i kasowanie po weryfikacji."""
+"""Wysyłka archiwum surowego na Drive, kasowanie po weryfikacji."""
 
 from __future__ import annotations
 
@@ -15,21 +15,20 @@ from gtfs_olap.maintenance.rclone import available, upload_and_verify
 
 
 def _dirs_with_files(root: Path) -> Iterator[tuple[Path, list[str]]]:
-    """os.walk zamiast rglob - nie chcemy stat() na każdym z tysięcy plików."""
+    # os.walk, nie rglob - bez stat() na każdym z tysięcy plików.
     for dirpath, _dirnames, filenames in os.walk(root):
         if filenames:
             yield Path(dirpath), filenames
 
 
 def _is_closed(directory: Path, files: list[str], quiet_s: float) -> bool:
-    """Gotowy do wysyłki, gdy nic nie przybyło od quiet_s. Jedna reguła dla
-    wszystkich rodzajów archiwum - bieżąca godzina wyklucza się sama."""
+    """Gotowy do wysyłki, gdy nic nie przybyło od quiet_s. Bieżąca godzina
+    wyklucza się sama, bez logiki kalendarzowej."""
     newest = max((directory / f).stat().st_mtime for f in files)
     return (time.time() - newest) > quiet_s
 
 
 def _remove_empty_parents(directory: Path, root: Path) -> None:
-    """Sprząta katalogi dt=/hh= po wysłaniu zawartości."""
     current = directory
     while current != root and current.is_relative_to(root):
         try:

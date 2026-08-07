@@ -1,7 +1,7 @@
 """Eksport z TimescaleDB do Parquetu.
 
-Warunek bezpiecznego skasowania surowych faktów z VPS i jednocześnie interfejs
-do części uczeniowej, która pracuje wyłącznie na plikach (decyzja D3).
+Warunek skasowania surowych faktów z VPS, a przy okazji interfejs do części
+uczeniowej - ta pracuje wyłącznie na plikach, bez dostępu do bazy.
 """
 
 from __future__ import annotations
@@ -18,8 +18,7 @@ from loguru import logger
 from gtfs_olap.config import DB_URL, EXPORT_DIR, TZ
 from gtfs_olap.io_utils import write_atomic
 
-# Schemat jawny: przy zapisie strumieniowym partia z kolumną w całości NULL
-# dałaby wnioskowany typ niezgodny z resztą.
+# Schemat jawny - partia z kolumną w całości NULL zepsułaby wnioskowanie typu.
 FACTS_SCHEMA = pa.schema([
     ("ts", pa.timestamp("us", tz="UTC")),
     ("wersja_id", pa.int32()),
@@ -38,17 +37,14 @@ _BATCH = 100_000
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    """Doba w czasie lokalnym - granice w UTC rozjechałyby się z agregatami,
-    które używają time_bucket(..., 'Europe/Warsaw')."""
+    """Doba lokalna, nie UTC - inaczej rozjazd z time_bucket w agregatach."""
     start = datetime.combine(day, dtime.min, tzinfo=TZ)
     return start, start + timedelta(days=1)
 
 
 def export_facts(day: date) -> Path | None:
-    """Doba surowych faktów do jednego pliku Parquet.
-
-    Partiami przez kursor serwerowy - doba to ~3,5 mln wierszy, a obok działa
-    kolektor z ~650 MB cache'u."""
+    """Doba faktów do jednego Parquetu, partiami przez kursor serwerowy -
+    3,5 mln wierszy, a obok chodzi kolektor z 650 MB cache'u."""
     start, end = _day_bounds(day)
     out = (EXPORT_DIR / "fakty" / f"dt={day:%Y-%m-%d}"
            / f"fakt_opoznienia_{day:%Y%m%d}.parquet")
@@ -96,7 +92,7 @@ def export_facts(day: date) -> Path | None:
 
 
 def _export_small(sql: str, params: tuple, out: Path, label: str) -> Path | None:
-    """Eksport małej tabeli w całości - nie dla fakt_opoznienia."""
+    """Tylko dla małych tabel - fakty idą przez export_facts."""
     with psycopg.connect(DB_URL) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         columns = [d.name for d in cur.description]
@@ -114,7 +110,7 @@ def _export_small(sql: str, params: tuple, out: Path, label: str) -> Path | None
 
 
 def export_aggregate(day: date) -> Path | None:
-    """Agregat 15-minutowy - bezpośrednie źródło wektora cech."""
+    """Bezpośrednie źródło wektora cech."""
     start, end = _day_bounds(day)
     return _export_small(
         "SELECT * FROM ca_opoznienia_15min "
@@ -126,8 +122,8 @@ def export_aggregate(day: date) -> Path | None:
 
 
 def export_etl_run(day: date) -> Path | None:
-    """Rejestr przebiegów - jedyne źródło inwentaryzacji luk. Luka objawia się
-    BRAKIEM wierszy, nie statusem ERROR."""
+    """Jedyne źródło inwentaryzacji luk. Luka to BRAK wierszy, nie ERROR -
+    gdy proces nie żyje, nie ma kto zapisać błędu."""
     start, end = _day_bounds(day)
     return _export_small(
         "SELECT * FROM fakt_etl_run "
@@ -139,7 +135,7 @@ def export_etl_run(day: date) -> Path | None:
 
 
 def export_dimensions() -> list[Path]:
-    """Wymiary w całości - małe, nadpisywane co noc."""
+    """Nadpisywane co noc."""
     out = []
     for table in ("dim_linia", "dim_przystanek", "dim_operator",
                   "dim_data", "dim_wersja_rozkladu"):

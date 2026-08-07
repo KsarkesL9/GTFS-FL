@@ -45,10 +45,8 @@ def _sleep_until(deadline: float) -> None:
 
 
 def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
-    """Zapis surowej odpowiedzi (D2), partycjonowany dt=/hh= pod pyarrow.
-
-    Nigdy nie propaguje wyjątku: awaria archiwum nie może zatrzymać zapisu
-    faktów do bazy."""
+    """Partycjonowanie dt=/hh= pod pyarrow. Nigdy nie rzuca - pełny dysk ma
+    kosztować archiwum, nie całą pętlę ETL."""
     try:
         dt = datetime.fromtimestamp(header_ts, tz=timezone.utc).astimezone(TZ)
         final = (RAW_DIR / kind / f"dt={dt:%Y-%m-%d}" / f"hh={dt:%H}"
@@ -78,10 +76,9 @@ def _archive_vehicle_positions(client: httpx.Client) -> None:
         logger.warning(f"vehiclePositions pominięte: {e}")
 
 
-# Cały lookup_schedule (1,3 mln wierszy, ~700 MB) trzymamy w pamięci procesu:
-# lookup per wiersz przez SELECT to byłoby 1000+ roundtripów na migawkę.
-# RT GZM publikuje TripUpdate BEZ stop_id, więc cache indeksujemy po
-# (trip_id, stop_sequence), a stop_id bierzemy z niego.
+# Cały rozkład (1,3 mln wierszy, ~700 MB) w pamięci - inaczej 1000+ zapytań
+# na migawkę. UWAGA: GZM publikuje TripUpdate BEZ stop_id, więc kluczem cache
+# jest (trip_id, stop_sequence), a stop_id bierzemy stąd.
 def _is_alive(conn) -> bool:
     try:
         with conn.cursor() as cur:
@@ -193,8 +190,8 @@ class ScheduleCache:
                     f"{len(self._by_trip):,} kursów ({time.monotonic() - t0:.1f}s)")
 
 
-# TripUpdate z GZM są minimalne: bez start_date (zakładamy dziś w Europe/Warsaw),
-# bez stop_id, bez arrival.time - tylko arrival.delay.
+# TripUpdate z GZM są minimalne: bez start_date, bez stop_id, bez arrival.time.
+# Zostaje samo arrival.delay.
 
 def _process_feed(feed, cache: ScheduleCache) -> list[tuple]:
     """FeedMessage -> krotki do COPY. Trzy ścieżki: kurs CANCELED (ANULOWANY),
@@ -411,9 +408,8 @@ def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
             if once or _stop:
                 break
 
-            # Takt oparty na deadline, nie sleep() po iteracji: nierówne
-            # próbkowanie trafiałoby wprost w cechę n(t) i produkowało
-            # fałszywe anomalie A2 z przyczyn infrastrukturalnych.
+            # Deadline zamiast sleep() po iteracji - nierówne próbkowanie
+            # trafia wprost w cechę n(t) i daje fałszywe anomalie.
             next_tick += interval_s
             drift = time.monotonic() - next_tick
             if drift > 0:

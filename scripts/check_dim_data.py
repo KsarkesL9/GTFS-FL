@@ -1,8 +1,8 @@
 """Diagnostyka szkód w dim_data.typ_dnia.
 
 Wcześniejsze wersje static ETL nadpisywały typ_dnia wartością 'brak rozkładu'
-dla dat przeszłych przy każdym uruchomieniu. typ_dnia wchodzi wprost do cechy
-r(t), więc warto sprawdzić skalę przed użyciem danych historycznych.
+dla dat przeszłych przy każdym uruchomieniu. typ_dnia wchodzi wprost do cech,
+więc warto sprawdzić skalę przed użyciem danych historycznych.
 
 Skrypt niczego nie zmienia.
 

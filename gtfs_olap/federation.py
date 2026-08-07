@@ -1,13 +1,7 @@
-"""Symulacja uczenia federacyjnego (Moduł C, rozdz. 7.3).
+"""Symulacja federacji na strategiach Flower.
 
-Agregacja jest wykonywana przez prawdziwe obiekty strategii Flower - FedAvg,
-FedProx, FedMedian, FedTrimmedAvg - więc logika uśredniania jest tą samą,
-która działałaby we wdrożeniu rozproszonym.
-
-Klienci są uruchamiani sekwencyjnie w jednym procesie, bez silnika Ray.
-Rozdz. 13 wprost wymienia sekwencyjną symulację klientów jako sposób na
-ograniczoną moc obliczeniową, a przy dziewięciu klientach równoległość nie
-daje nic poza dodatkowym trybem awarii.
+Klienci lecą sekwencyjnie w jednym procesie, bez Ray - przy dziewięciu
+klientach równoległość dokłada tylko tryb awarii.
 """
 
 from __future__ import annotations
@@ -58,7 +52,6 @@ def run_federation(clients: list[Client], strategy: Strategy, rounds: int,
                    n_features: int, hidden: int = 64, local_epochs: int = 3,
                    mu: float = 0.0, seed: int = 0
                    ) -> tuple[GRUAutoencoder, list[RoundResult]]:
-    """Pełny obieg federacyjny. Zwraca model globalny i przebieg rund."""
     _seed(seed)
 
     global_model = GRUAutoencoder(n_features, hidden)
@@ -108,7 +101,7 @@ def run_federation(clients: list[Client], strategy: Strategy, rounds: int,
 
 def train_local(client: Client, n_features: int, hidden: int = 64,
                 epochs: int = 30, seed: int = 0) -> GRUAutoencoder:
-    """Model czysto lokalny - punkt odniesienia dla eksperymentu E1."""
+    """Model bez federacji - odniesienie do porównań."""
     _seed(seed)
     model = GRUAutoencoder(n_features, hidden)
     train(model, client.X_train, epochs=epochs)
