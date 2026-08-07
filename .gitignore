@@ -40,3 +40,5 @@ kepler.gl.html
 dane/
 cechy/
 *.dump
+wyniki/
+.venv/
