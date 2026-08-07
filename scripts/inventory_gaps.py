@@ -25,10 +25,10 @@ WITH kolejne AS (
 )
 SELECT started_at AS luka_od,
        nastepny   AS luka_do,
-       EXTRACT(EPOCH FROM (nastepny - started_at)) / 60.0 AS czas_min
+       (EXTRACT(EPOCH FROM (nastepny - started_at)) / 60.0)::float8 AS czas_min
 FROM kolejne
 WHERE nastepny IS NOT NULL
-  AND nastepny - started_at > make_interval(mins => %s)
+  AND nastepny - started_at > make_interval(secs => %s * 60)
 ORDER BY started_at
 """
 
@@ -55,7 +55,7 @@ def main() -> int:
     pokrycie = 100 * (1 - utracone_min / okno_min) if okno_min else 0
 
     print(f"\n=== Pokrycie czasowe ===")
-    print(f"  okno        : {od:%Y-%m-%d %H:%M} → {do:%Y-%m-%d %H:%M}")
+    print(f"  okno        : {od:%Y-%m-%d %H:%M} -> {do:%Y-%m-%d %H:%M}")
     print(f"  przebiegów  : {ile:,}")
     print(f"  luk (>{args.prog_min:g} min): {len(luki)}")
     print(f"  czas utracony: {utracone_min / 60:.1f} h")
@@ -64,13 +64,13 @@ def main() -> int:
     if not luki.empty:
         print(f"\n=== 10 największych luk ===")
         for _, r in luki.nlargest(10, "czas_min").iterrows():
-            print(f"  {r.luka_od:%Y-%m-%d %H:%M} → {r.luka_do:%Y-%m-%d %H:%M}  "
+            print(f"  {r.luka_od:%Y-%m-%d %H:%M} -> {r.luka_do:%Y-%m-%d %H:%M}  "
                   f"({r.czas_min / 60:.2f} h)")
 
         out = EXPORT_DIR / "luki" / "inwentaryzacja_luk.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         luki.to_parquet(out, index=False, compression="zstd")
-        logger.success(f"Zapisano {len(luki)} luk → {out}")
+        logger.success(f"Zapisano {len(luki)} luk -> {out}")
     else:
         logger.success("Brak luk powyżej progu.")
 

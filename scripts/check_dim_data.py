@@ -23,7 +23,7 @@ def main() -> int:
         """)
         print("\n=== Rozkład typ_dnia w dim_data ===")
         for typ, ile, od, do in cur.fetchall():
-            print(f"  {str(typ):<24} {ile:>6}   {od} → {do}")
+            print(f"  {str(typ):<24} {ile:>6}   {od} -> {do}")
 
         cur.execute("""
             SELECT count(*) FILTER (WHERE typ_dnia = 'brak rozkładu'),
