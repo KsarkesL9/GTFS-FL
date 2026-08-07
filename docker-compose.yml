@@ -2,14 +2,58 @@ services:
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: gtfs-tsdb
+    restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: gtfs_olap
+      TZ: Europe/Warsaw
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - tsdb-data:/var/lib/postgresql/data
+      - /srv/gtfs/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=1GB
+        -c work_mem=16MB
+        -c maintenance_work_mem=128MB
+        -c max_connections=50
+        -c max_wal_size=1GB
+        -c timescaledb.max_background_workers=4
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
 
-volumes:
-  tsdb-data:
+  collector:
+    build: .
+    container_name: gtfs-collector
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    env_file: .env
+    volumes:
+      - /srv/gtfs/data:/data
+    stop_grace_period: 30s
+    command: python scripts/run_rt_etl.py
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}
+
+  maintenance:
+    build: .
+    container_name: gtfs-maintenance
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    env_file: .env
+    volumes:
+      - /srv/gtfs/data:/data
+      - ./secrets:/home/gtfs/.config/rclone
+    command: /usr/local/bin/supercronic /app/crontab
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "3"}

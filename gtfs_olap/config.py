@@ -1,12 +1,55 @@
+import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-DB_URL = "postgresql://postgres:postgres@localhost:5432/gtfs_olap"
-CKAN_API = (
+def _require(name: str) -> str:
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(
+            f"Brak wymaganej zmiennej środowiskowej {name}. "
+            f"Skopiuj .env.example do .env i uzupełnij."
+        )
+    return val
+
+DB_URL = _require("GTFS_DB_URL")
+
+CKAN_API = os.getenv(
+    "GTFS_CKAN_API",
     "https://otwartedane.metropoliagzm.pl/api/3/action/package_show"
-    "?id=rozklady-jazdy-i-lokalizacja-przystankow-gtfs-wersja-rozszerzona"
+    "?id=rozklady-jazdy-i-lokalizacja-przystankow-gtfs-wersja-rozszerzona",
 )
-RT_URL = "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/tripUpdates"
+RT_URL = os.getenv(
+    "GTFS_RT_URL",
+    "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/tripUpdates",
+)
+
+VP_URL = os.getenv(
+    "GTFS_VP_URL",
+    "https://gtfsrt.transportgzm.pl:5443/gtfsrt/gzm/vehiclePositions",
+)
+ARCHIVE_VP = os.getenv("GTFS_ARCHIVE_VP", "1") == "1"
+
+RT_INTERVAL_S = int(os.getenv("GTFS_RT_INTERVAL_S", "20"))
+RT_TIMEOUT_S = float(os.getenv("GTFS_RT_TIMEOUT_S", "10"))
+VP_TIMEOUT_S = float(os.getenv("GTFS_VP_TIMEOUT_S", "5"))
+
+RAW_DIR = Path(os.getenv("GTFS_RAW_DIR", "/data/raw"))
+EXPORT_DIR = Path(os.getenv("GTFS_EXPORT_DIR", "/data/export"))
+STATE_DIR = Path(os.getenv("GTFS_STATE_DIR", "/data/state"))
+
+RCLONE_BIN = os.getenv("GTFS_RCLONE_BIN", "rclone")
+RCLONE_REMOTE = os.getenv("GTFS_RCLONE_REMOTE", "gdrive:gtfs-olap")
+
+UPLOAD_QUIET_MIN = int(os.getenv("GTFS_UPLOAD_QUIET_MIN", "10"))
+
+FAKTY_RETENCJA_H = int(os.getenv("GTFS_FAKTY_RETENCJA_H", "48"))
+
+HEALTHCHECK_URL = os.getenv("GTFS_HEALTHCHECK_URL", "")
+MIN_FREE_GB = float(os.getenv("GTFS_MIN_FREE_GB", "15"))
+MAX_ETL_CISZA_MIN = float(os.getenv("GTFS_MAX_ETL_CISZA_MIN", "5"))
+MAX_STAGING_H = float(os.getenv("GTFS_MAX_STAGING_H", "3"))
+MAX_NIGHTLY_H = float(os.getenv("GTFS_MAX_NIGHTLY_H", "26"))
+
 TZ = ZoneInfo("Europe/Warsaw")
 
 TRANSPORT_TYPES = {"0": "tramwaj", "3": "autobus", "11": "trolejbus"}
@@ -72,8 +115,12 @@ CREATE TABLE IF NOT EXISTS dim_wersja_rozkladu (
     nazwa_paczki   TEXT,
     obowiazuje_od  DATE,
     obowiazuje_do  DATE,
+    odcisk         TEXT,
     zaladowano     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Dla baz założonych przed wprowadzeniem odcisku (CREATE IF NOT EXISTS
+-- nie dodaje kolumn do istniejącej tabeli).
+ALTER TABLE dim_wersja_rozkladu ADD COLUMN IF NOT EXISTS odcisk TEXT;
 CREATE INDEX IF NOT EXISTS idx_wersja_obowiazuje
     ON dim_wersja_rozkladu (obowiazuje_od, obowiazuje_do);
 

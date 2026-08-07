@@ -1,0 +1,16 @@
+services:
+  db:
+    volumes:
+      - tsdb-data:/var/lib/postgresql/data
+
+  collector:
+    volumes:
+      - ./data:/data
+
+  maintenance:
+    volumes:
+      - ./data:/data
+      - ./secrets/rclone.conf:/home/gtfs/.config/rclone/rclone.conf:ro
+
+volumes:
+  tsdb-data:

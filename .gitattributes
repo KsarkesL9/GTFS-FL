@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+crontab     text eol=lf
+*.sh        text eol=lf
+*.sql       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf
+.env.example text eol=lf
+
+*.pbix    binary
+*.pdf     binary
+*.png     binary
+*.zip     binary
+*.parquet binary
+*.pb.gz   binary

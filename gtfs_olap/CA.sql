@@ -1,3 +1,31 @@
+DO $migracja$
+DECLARE
+    wersja_docelowa INT := 2;
+    zmaterializowane BIGINT;
+BEGIN
+    CREATE TABLE IF NOT EXISTS _ca_wersja (wersja INT PRIMARY KEY);
+
+    IF EXISTS (SELECT 1 FROM _ca_wersja WHERE wersja = wersja_docelowa) THEN
+        RETURN;
+    END IF;
+
+    IF to_regclass('ca_opoznienia_15min') IS NOT NULL THEN
+        EXECUTE 'SELECT count(*) FROM ca_opoznienia_15min' INTO zmaterializowane;
+        RAISE WARNING 'Zmiana definicji agregatów: usuwam % zmaterializowanych '
+                      'wierszy z ca_opoznienia_15min i widoków pochodnych.',
+                      zmaterializowane;
+    END IF;
+
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_dzien CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_1h CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_15min CASCADE;
+    DROP MATERIALIZED VIEW IF EXISTS ca_opoznienia_15min_przystanek CASCADE;
+
+    DELETE FROM _ca_wersja;
+    INSERT INTO _ca_wersja VALUES (wersja_docelowa);
+END
+$migracja$;
+
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_15min
 WITH (timescaledb.continuous) AS
 SELECT
@@ -6,23 +34,30 @@ SELECT
     wersja_id,
     linia_id,
     operator_id,
-    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS suma_opoznien,
-    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA')          AS obserwacje,
+    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS suma_opoznien,
     COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
-                              AND opoznienie_s BETWEEN -30 AND 60)  AS punktualne,
-    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS min_opoznienie,
-    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS max_opoznienie,
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS obserwacje,
+    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -30 AND 60)     AS punktualne,
+    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS min_opoznienie,
+    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS max_opoznienie,
+    COUNT(*) FILTER (WHERE status = 'OBSERWACJA'
+                     AND (opoznienie_s < -3600 OR opoznienie_s > 7200)) AS odrzucone,
     COUNT(*) FILTER (WHERE status = 'ANULOWANY')                    AS anulowane,
     COUNT(*) FILTER (WHERE status = 'POMINIETY')                    AS pominiete
 FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, linia_id, operator_id
 WITH NO DATA;
 
+SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min',
+    if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min',
-    start_offset      => INTERVAL '7 days',
+    start_offset      => INTERVAL '6 hours',
     end_offset        => INTERVAL '10 minutes',
-    schedule_interval => INTERVAL '5 minutes',
-    if_not_exists     => true);
+    schedule_interval => INTERVAL '5 minutes');
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ca_opoznienia_1h
 WITH (timescaledb.continuous) AS
@@ -37,6 +72,7 @@ SELECT
     SUM(punktualne)     AS punktualne,
     SUM(anulowane)      AS anulowane,
     SUM(pominiete)      AS pominiete,
+    SUM(odrzucone)      AS odrzucone,
     MIN(min_opoznienie) AS min_opoznienie,
     MAX(max_opoznienie) AS max_opoznienie
 FROM ca_opoznienia_15min
@@ -61,6 +97,7 @@ SELECT
     SUM(punktualne)     AS punktualne,
     SUM(anulowane)      AS anulowane,
     SUM(pominiete)      AS pominiete,
+    SUM(odrzucone)      AS odrzucone,
     MIN(min_opoznienie) AS min_opoznienie,
     MAX(max_opoznienie) AS max_opoznienie
 FROM ca_opoznienia_1h
@@ -80,23 +117,32 @@ SELECT
     wersja_id,
     przystanek_id,
     linia_id,
-    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS suma_opoznien,
-    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA')          AS obserwacje,
+    SUM(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS suma_opoznien,
     COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
-                              AND opoznienie_s BETWEEN -30 AND 60)  AS punktualne,
-    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS min_opoznienie,
-    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA')          AS max_opoznienie,
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS obserwacje,
+    COUNT(*)          FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -30 AND 60)     AS punktualne,
+    MIN(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS min_opoznienie,
+    MAX(opoznienie_s) FILTER (WHERE status = 'OBSERWACJA'
+                              AND opoznienie_s BETWEEN -3600 AND 7200) AS max_opoznienie,
+    COUNT(*) FILTER (WHERE status = 'OBSERWACJA'
+                     AND (opoznienie_s < -3600 OR opoznienie_s > 7200)) AS odrzucone,
     COUNT(*) FILTER (WHERE status = 'ANULOWANY')                    AS anulowane,
     COUNT(*) FILTER (WHERE status = 'POMINIETY')                    AS pominiete
 FROM fakt_opoznienia
 GROUP BY kwadrans, data_kursu, wersja_id, przystanek_id, linia_id
 WITH NO DATA;
+SELECT remove_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
+    if_not_exists => true);
 SELECT add_continuous_aggregate_policy('ca_opoznienia_15min_przystanek',
-    start_offset      => INTERVAL '7 days',
+    start_offset      => INTERVAL '6 hours',
     end_offset        => INTERVAL '10 minutes',
-    schedule_interval => INTERVAL '5 minutes',
-    if_not_exists     => true);
+    schedule_interval => INTERVAL '5 minutes');
 
-SELECT add_retention_policy('fakt_opoznienia', INTERVAL '30 days', if_not_exists => true);
+SELECT remove_retention_policy('fakt_opoznienia', if_exists => true);
+SELECT remove_retention_policy('fakt_etl_run', if_exists => true);
 
-SELECT add_retention_policy('fakt_etl_run', INTERVAL '90 days', if_not_exists => true);
+SELECT remove_retention_policy('ca_opoznienia_15min_przystanek', if_exists => true);
+SELECT add_retention_policy('ca_opoznienia_15min_przystanek', INTERVAL '14 days');

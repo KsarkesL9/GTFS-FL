@@ -1,0 +1,4 @@
+*/15   *     *      *     *         python -m gtfs_olap.maintenance.upload_raw
+30     3     *      *     *         python -m gtfs_olap.maintenance.nightly
+0      4     *      *     *         python scripts/run_static_etl.py
+*/10   *     *      *     *         python -m gtfs_olap.maintenance.healthcheck
