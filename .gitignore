@@ -4,25 +4,31 @@ __pycache__/
 *.egg
 dist/
 build/
-
 .venv/
 
 .env
+.env.*
+!.env.example
+secrets/
 
 .vscode/
 .idea/
+.claude/
+.gemini/
+.cursor/
+.aider*
 *.swp
 
 Thumbs.db
 .DS_Store
 
-*.zip
-tmp/
-
-secrets/
-
 data/
-*.pb.gz
+dane/
+cechy/
+wyniki/
+tmp/
+*.zip
+*.dump
 *.parquet
+*.pb.gz
 *.pbix
-kepler.gl.html

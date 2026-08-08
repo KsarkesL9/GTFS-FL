@@ -20,6 +20,7 @@ from gtfs_olap.config import (
     CA_DDL, CKAN_API, DB_URL, DDL, DEDUP_KEYS, TRANSPORT_TYPES, DAYS_PL,
     WEEKDAY_COLS, DIM_DATA_LOOKBACK_DAYS, RAW_DIR, TZ,
 )
+from gtfs_olap.io_utils import write_atomic
 
 ZIP_RE = re.compile(r"schedule_ZTM_(\d{4})\.(\d{2})\.(\d{2})_(\d+)_(\d+)\.zip")
 
@@ -228,8 +229,6 @@ def _copy_df(conn, table: str, df: pd.DataFrame, cols: list[str]):
 def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str],
                set_overrides: dict[str, str] | None = None):
 \
-\
-\
 
     set_overrides = set_overrides or {}
     stg = f"_stg_{table}"
@@ -256,8 +255,6 @@ LOOKUP_COLS = ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
 
 def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
 \
-\
-\
 
     cols = [c for c in LOOKUP_COLS if c != "wersja_id"]
     ordered = lookup[cols].sort_values(cols, kind="mergesort")
@@ -268,27 +265,21 @@ def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
 def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
 \
 
-    dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
-    dest.mkdir(parents=True, exist_ok=True)
-    out = dest / f"lookup_schedule_w{wersja_id}.parquet"
-    tmp = dest / (out.name + ".tmp")
-    lookup.to_parquet(tmp, index=False, compression="zstd")
-    tmp.replace(out)
+    out = (RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
+           / f"lookup_schedule_w{wersja_id}.parquet")
+    write_atomic(out, lambda target: lookup.to_parquet(
+        target, index=False, compression="zstd"))
     logger.info(f"  archiwum: {out.name} ({len(lookup):,} wierszy)")
 
 def _archive_packages(zip_paths: list[Path], dzien: date):
-\
 
     dest = RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
-    dest.mkdir(parents=True, exist_ok=True)
     skopiowane = 0
     for zp in zip_paths:
         target = dest / zp.name
         if target.exists():
             continue
-        tmp = dest / (zp.name + ".tmp")
-        shutil.copy2(zp, tmp)
-        tmp.replace(target)
+        write_atomic(target, lambda tmp, src=zp: shutil.copy2(src, tmp))
         skopiowane += 1
     logger.info(f"  archiwum paczek: {skopiowane} nowych z {len(zip_paths)} → {dest}")
 

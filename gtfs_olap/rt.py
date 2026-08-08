@@ -16,6 +16,7 @@ from gtfs_olap.config import (
     ARCHIVE_VP, DB_URL, DDL, RAW_DIR, RT_INTERVAL_S, RT_TIMEOUT_S, RT_URL, TZ,
     VP_TIMEOUT_S, VP_URL,
 )
+from gtfs_olap.io_utils import write_atomic
 
 TRIP_CANCELED = gtfs_realtime_pb2.TripDescriptor.CANCELED
 STOP_SKIPPED = gtfs_realtime_pb2.TripUpdate.StopTimeUpdate.SKIPPED
@@ -38,21 +39,19 @@ def _sleep_until(deadline: float) -> None:
 
 def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
 \
-\
-\
 
     try:
         dt = datetime.fromtimestamp(header_ts, tz=timezone.utc).astimezone(TZ)
-        d = RAW_DIR / kind / f"dt={dt:%Y-%m-%d}" / f"hh={dt:%H}"
-        final = d / f"{kind}_{header_ts}.pb.gz"
+        final = (RAW_DIR / kind / f"dt={dt:%Y-%m-%d}" / f"hh={dt:%H}"
+                 / f"{kind}_{header_ts}.pb.gz")
         if final.exists():
             return True
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / (final.name + ".tmp")
-        with gzip.open(tmp, "wb", compresslevel=6) as f:
-            f.write(raw)
-        tmp.replace(final)
-        return True
+
+        def write(target):
+            with gzip.open(target, "wb", compresslevel=6) as f:
+                f.write(raw)
+
+        return write_atomic(final, write)
     except Exception as e:
         logger.error(f"Archiwum surowe {kind} nieudane: {e}")
         return False
