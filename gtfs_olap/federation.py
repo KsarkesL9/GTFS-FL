@@ -99,3 +99,13 @@ def train_local(client: Client, n_features: int, hidden: int = 64,
     model = GRUAutoencoder(n_features, hidden)
     train(model, client.X_train, epochs=epochs)
     return model
+
+def train_centralized(clients: list[Client], n_features: int, hidden: int = 64,
+                      epochs: int = 30, seed: int = 0) -> GRUAutoencoder:
+\
+
+    _seed(seed)
+    model = GRUAutoencoder(n_features, hidden)
+    pooled = np.concatenate([c.X_train for c in clients])
+    train(model, pooled, epochs=epochs)
+    return model

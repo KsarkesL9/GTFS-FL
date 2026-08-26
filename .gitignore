@@ -24,8 +24,8 @@ Thumbs.db
 
 data/
 dane/
-cechy/
-wyniki/
+cechy*/
+wyniki*/
 tmp/
 *.zip
 *.dump

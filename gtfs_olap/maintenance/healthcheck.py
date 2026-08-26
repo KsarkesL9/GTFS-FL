@@ -17,8 +17,8 @@ import psycopg
 from loguru import logger
 
 from gtfs_olap.config import (
-    DB_URL, HEALTHCHECK_URL, MAX_ETL_SILENCE_MIN, MAX_NIGHTLY_H, MAX_STAGING_H,
-    MIN_FREE_GB, RAW_DIR, STATE_DIR, TZ,
+    DB_URL, HEALTHCHECK_URL, MAX_EMPTY_FEED_CYCLES, MAX_ETL_SILENCE_MIN,
+    MAX_NIGHTLY_H, MAX_STAGING_H, MIN_FREE_GB, RAW_DIR, STATE_DIR, TZ,
 )
 from gtfs_olap.maintenance.nightly import MARKER
 
@@ -41,6 +41,26 @@ def _check_collector() -> str | None:
     silence_min = float(row[0]) / 60
     if silence_min > MAX_ETL_SILENCE_MIN:
         return f"kolektor milczy od {silence_min:.1f} min (próg {MAX_ETL_SILENCE_MIN})"
+    return None
+
+def _check_feed() -> str | None:
+\
+\
+
+    if not 5 <= datetime.now(TZ).hour < 23:
+        return None
+    try:
+        with psycopg.connect(DB_URL, connect_timeout=10) as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*), count(*) FILTER (WHERE obserwacje = 0) "
+                        "FROM (SELECT obserwacje FROM fakt_etl_run "
+                        "      ORDER BY started_at DESC LIMIT %s) t",
+                        (MAX_EMPTY_FEED_CYCLES,))
+            total, empty = cur.fetchone()
+    except Exception as exc:
+        return f"baza nieosiągalna: {exc}"
+    if total == MAX_EMPTY_FEED_CYCLES and empty == total:
+        return (f"feed GZM pusty przez {total} kolejnych cykli - "
+                f"serwer ZTM odpowiada, ale nie podaje żadnego pojazdu")
     return None
 
 def _system_age_h() -> float | None:
@@ -93,7 +113,7 @@ def _check_nightly() -> str | None:
     return None
 
 def main() -> int:
-    problems = [p for p in (_check_collector(), _check_staging(),
+    problems = [p for p in (_check_collector(), _check_feed(), _check_staging(),
                             _check_disk(), _check_nightly()) if p]
 
     if problems:

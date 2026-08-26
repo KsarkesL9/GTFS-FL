@@ -50,6 +50,8 @@ MAX_ETL_SILENCE_MIN = float(os.getenv("GTFS_MAX_ETL_SILENCE_MIN", "5"))
 MAX_STAGING_H = float(os.getenv("GTFS_MAX_STAGING_H", "3"))
 MAX_NIGHTLY_H = float(os.getenv("GTFS_MAX_NIGHTLY_H", "26"))
 
+MAX_EMPTY_FEED_CYCLES = int(os.getenv("GTFS_MAX_EMPTY_FEED_CYCLES", "15"))
+
 TZ = ZoneInfo("Europe/Warsaw")
 
 TRANSPORT_TYPES = {"0": "tramwaj", "3": "autobus", "11": "trolejbus"}
