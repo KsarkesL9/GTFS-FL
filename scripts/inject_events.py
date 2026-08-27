@@ -37,6 +37,8 @@ def main() -> int:
     ap.add_argument("--drift-param", type=float, default=None)
     ap.add_argument("--repeats", type=int, default=20,
                     help="powtórzeń na konfigurację u klienta (10.2)")
+    ap.add_argument("--split", choices=["test", "train"], default="test",
+                    help="train zanieczyszcza zbiór treningowy - do E3")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -47,21 +49,27 @@ def main() -> int:
     df["split"] = np.where(df["window"] <= boundary, "train", "test")
     train = df[df["split"] == "train"]
 
-    shape = None
-    if args.drift:
-        param = args.drift_param
-        if param is None:
-            param = D1_SHIFTS_S[-1] if args.drift == "D1" else D2_LAMBDA
-        events = sample_drift(df, args.drift, param, seed=args.seed)
-        if args.drift == "D2":
-            shape = daily_shape(train)
-        logger.info(f"Dryf {args.drift} (parametr {param}) u {len(events)} klientów")
-    else:
+    shape, events = None, []
+    if args.kinds:
         events = sample_events(df, repeats=args.repeats, seed=args.seed,
-                               kinds=tuple(args.kinds))
+                               kinds=tuple(args.kinds), split=args.split)
         logger.info(f"Rozmieszczono {len(events)} zdarzeń typów "
                     f"{sorted({e.kind for e in events})} "
                     f"(limit narzuca długość zbioru testowego i bufory 2 h)")
+    if args.drift:
+
+        param = args.drift_param
+        if param is None:
+            param = D1_SHIFTS_S[-1] if args.drift == "D1" else D2_LAMBDA
+        drifts = sample_drift(df, args.drift, param, seed=args.seed,
+                              split=args.split)
+        if args.drift == "D2":
+            shape = daily_shape(train)
+        events = drifts + events
+        logger.info(f"Dryf {args.drift} (parametr {param}) u {len(drifts)} klientów")
+    if not events:
+        logger.error("Nie wybrano ani anomalii, ani dryfu")
+        return 1
 
     df = inject(df, events, shape=shape)
 
@@ -76,7 +84,8 @@ def main() -> int:
 
     print(f"\n{'klient':<26} {'zdarzeń':>8} {'sekw.test':>10} {'anomalnych':>11}")
     total_seq = total_anom = 0
-    for client, group in df[df["split"] == "test"].groupby("client", observed=True):
+    name = "X_test.npy" if args.split == "test" else "X_train.npy"
+    for client, group in df[df["split"] == args.split].groupby("client", observed=True):
         group = group.sort_values("window").copy()
 
         in_event = (group["event_id"].to_numpy() >= 0)
@@ -90,12 +99,12 @@ def main() -> int:
             continue
         labels = labels.merge(
             group[["client", "window", "event_id", "event_kind", "event_param",
-                   "touches"]],
+                   "touches", "drift"]],
             on=["client", "window"], how="left")
         directory = args.out / f"client={client}"
         directory.mkdir(exist_ok=True)
-        np.save(directory / "X_test.npy", X)
-        labels.to_parquet(directory / "test_labels.parquet", index=False)
+        np.save(directory / name, X)
+        labels.to_parquet(directory / f"{args.split}_labels.parquet", index=False)
 
         anomalous = int((labels["event_id"] >= 0).sum())
         total_seq += len(X)

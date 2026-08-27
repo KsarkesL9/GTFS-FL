@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -44,8 +45,12 @@ def _seed(value: int) -> None:
 
 def run_federation(clients: list[Client], strategy: Strategy, rounds: int,
                    n_features: int, hidden: int = 64, local_epochs: int = 3,
-                   mu: float = 0.0, seed: int = 0
+                   mu: float = 0.0, seed: int = 0,
+                   update_hook: Callable[[str, list[np.ndarray], list[np.ndarray]],
+                                         list[np.ndarray]] | None = None
                    ) -> tuple[GRUAutoencoder, list[RoundResult]]:
+\
+
     _seed(seed)
 
     global_model = GRUAutoencoder(n_features, hidden)
@@ -64,6 +69,8 @@ def run_federation(clients: list[Client], strategy: Strategy, rounds: int,
             loss = train(local, client.X_train, epochs=local_epochs, mu=mu,
                          global_weights=global_weights)
             update = weights_to_arrays(local)
+            if update_hook is not None:
+                update = update_hook(client.name, update, global_weights)
             result.losses[client.name] = loss
             result.mb_per_client = _size_mb(update)
             fit_results.append((None, FitRes(

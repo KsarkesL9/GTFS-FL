@@ -19,33 +19,14 @@ from flwr.server.strategy import FedAvg, FedProx
 from loguru import logger
 
 from gtfs_olap.detection import evaluate
+from gtfs_olap.experiments import kind_subset, load_clients, load_events
+from gtfs_olap.features import FEATURES
 from gtfs_olap.federation import (
     Client, run_federation, train_centralized, train_local,
 )
 from gtfs_olap.model import (
     DEFAULT_PERCENTILE, alarm_threshold, reconstruction_errors,
 )
-
-def load_clients(directory: Path, val_share: float = 0.2) -> list[Client]:
-    clients = []
-    for path in sorted(directory.glob("client=*")):
-        X = np.load(path / "X_train.npy")
-        if len(X) < 10:
-            logger.warning(f"{path.name}: tylko {len(X)} sekwencji, pomijam")
-            continue
-        boundary = int(len(X) * (1 - val_share))
-        clients.append(Client(path.name.split("=", 1)[1], X[:boundary], X[boundary:]))
-    return clients
-
-def load_events(directory: Path, name: str) -> tuple[np.ndarray, pd.DataFrame]:
-    path = directory / f"client={name}"
-    return np.load(path / "X_test.npy"), pd.read_parquet(path / "test_labels.parquet")
-
-def _kind_subset(labels: pd.DataFrame, errors: np.ndarray, kind: str):
-\
-
-    keep = (labels["event_id"] < 0) | (labels["event_kind"] == kind)
-    return errors[keep.to_numpy()], labels[keep].reset_index(drop=True)
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -63,10 +44,20 @@ def main() -> int:
     ap.add_argument("--percentile", type=float, default=DEFAULT_PERCENTILE)
     ap.add_argument("--percentile-grid", nargs="*", type=float,
                     default=[90, 95, 97.5, 99, 99.5])
+    ap.add_argument("--drop-features", nargs="*", default=[],
+                    help="cechy usuwane z wektora wejściowego, np. d dmax delta_d")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     clients = load_clients(args.features)
+    keep = None
+    if args.drop_features:
+
+        keep = [i for i, f in enumerate(FEATURES) if f not in args.drop_features]
+        clients = [Client(c.name, c.X_train[:, :, keep], c.X_val[:, :, keep])
+                   for c in clients]
+        logger.info(f"Usunięto {args.drop_features}; zostaje "
+                    f"{len(keep)} cech: {[FEATURES[i] for i in keep]}")
     n_features = clients[0].X_train.shape[2]
     epochs = args.rounds * args.local_epochs
     logger.info(f"{len(clients)} klientów, {n_features} cech, "
@@ -99,6 +90,8 @@ def main() -> int:
             f1 = []
             for client in clients:
                 X, labels = load_events(args.tune_events, client.name)
+                if keep is not None:
+                    X = X[:, :, keep]
                 for variant, model in {"lokalny": locals_[client.name],
                                        **variants}.items():
                     cal = np.concatenate([client.X_train, client.X_val])
@@ -115,6 +108,8 @@ def main() -> int:
     for stream in args.events:
       for client in clients:
         X_test, labels = load_events(stream, client.name)
+        if keep is not None:
+            X_test = X_test[:, :, keep]
         local = locals_[client.name]
 
         for variant, model in {"lokalny": local, **variants}.items():
@@ -130,7 +125,7 @@ def main() -> int:
                          "prog": threshold, **scores.as_dict()})
             for kind in sorted(labels.loc[labels["event_id"] >= 0,
                                           "event_kind"].dropna().unique()):
-                e, l = _kind_subset(labels, errors, kind)
+                e, l = kind_subset(labels, errors, kind)
                 rows.append({"wariant": variant, "klient": client.name,
                              "strumien": stream.name, "typ": kind,
                              "prog": threshold,

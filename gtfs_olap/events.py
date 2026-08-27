@@ -109,18 +109,20 @@ def sample_events(df: pd.DataFrame, repeats: int, seed: int,
 def sample_drift(df: pd.DataFrame, kind: str, param: float, seed: int,
                  split: str = "test") -> list[Event]:
 \
+\
+\
+\
+\
+\
+\
+\
 
-    rng = np.random.default_rng(seed)
     events: list[Event] = []
     for client, group in df[df["split"] == split].groupby("client", observed=True):
         group = group.sort_values("window")
         windows = group["window"].to_numpy()
-        latest = len(group) - DRIFT_TAIL_WINDOWS
-        if latest <= BUFFER_WINDOWS:
-
-            start = min(BUFFER_WINDOWS, max(0, len(group) - 1))
-        else:
-            start = int(rng.integers(BUFFER_WINDOWS, latest))
+        start = max(BUFFER_WINDOWS, len(group) - DRIFT_TAIL_WINDOWS)
+        start = min(start, max(0, len(group) - 1))
         events.append(Event(client, pd.Timestamp(windows[start]),
                             len(group) - start, kind, float(param)))
     return events
@@ -151,6 +153,9 @@ def inject(df: pd.DataFrame, events: list[Event],
     out["event_id"] = -1
     out["event_kind"] = ""
     out["event_param"] = 0.0
+    out["drift"] = False
+
+    events = sorted(events, key=lambda e: e.kind not in DRIFT_KINDS)
 
     if shape is not None:
         out = out.merge(shape, on=["client", "hour"], how="left")
@@ -185,11 +190,14 @@ def inject(df: pd.DataFrame, events: list[Event],
         else:
             raise ValueError(f"nieznany typ zdarzenia: {event.kind}")
 
-        out.loc[rows, "event_id"] = event_id
-        out.loc[rows, "event_kind"] = event.kind
-        out.loc[rows, "event_param"] = p
+        if event.kind in DRIFT_KINDS:
+            out.loc[rows, "drift"] = True
+        else:
+            out.loc[rows, "event_id"] = event_id
+            out.loc[rows, "event_kind"] = event.kind
+            out.loc[rows, "event_param"] = p
 
-    touched = (out["event_id"] >= 0) & (out["n"] > 0)
+    touched = ((out["event_id"] >= 0) | out["drift"]) & (out["n"] > 0)
     for derived, primary in (("d", "S"), ("w", "q"), ("p", "u")):
         out.loc[touched, derived] = out.loc[touched, primary] / out.loc[touched, "n"]
     out["delta_d"] = out.groupby("client", observed=True)["d"].diff()
@@ -251,7 +259,10 @@ def _self_check() -> None:
     assert sample_events(df, repeats=1, seed=1) != events, "ziarna dają to samo"
 
     d1 = sample_drift(df, "D1", 60, seed=0)
+    assert d1[0].duration <= DRIFT_TAIL_WINDOWS or len(df) <= DRIFT_TAIL_WINDOWS,         "ogon dryfu dłuższy niż wymagany"
     after = inject(df, d1)
+    assert after["drift"].sum() == d1[0].duration, "dryf źle oznaczony"
+    assert (after["event_id"] == -1).all(), "dryf nie jest zdarzeniem do wykrycia"
     t0 = d1[0].start
     assert np.allclose(after.loc[after["window"] >= t0, "d"], 110.0), "D1: brak przesunięcia"
     assert np.allclose(after.loc[after["window"] < t0, "d"], 50.0), "D1: ruszone przed t0"
@@ -264,6 +275,10 @@ def _self_check() -> None:
     assert tail["d"].max() > 50.0, "D2: profil w ogóle nie wzrósł"
     assert np.allclose(after2.loc[after2["window"] < d2[0].start, "d"], 50.0), \
         "D2: ruszone przed t0"
+
+    both = inject(df, d1 + events)
+    assert (both["event_id"] >= 0).sum() == (out["event_id"] >= 0).sum(),         "dryf zjadł etykiety anomalii"
+    assert both["drift"].sum() == d1[0].duration, "dryf zniknął po dołożeniu anomalii"
 
     kinds = sorted({e.kind for e in events})
     print(f"events._self_check: OK (typy {kinds}, {len(events)} zdarzeń, "

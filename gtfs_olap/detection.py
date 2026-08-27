@@ -119,6 +119,24 @@ def _event_pr_curve(errors: np.ndarray, contiguous: np.ndarray,
             previous = recall
     return float(area)
 
+def detection_delays(errors: np.ndarray, labels: pd.DataFrame,
+                     threshold: float) -> np.ndarray:
+\
+\
+\
+
+    order = np.argsort(labels["window"].to_numpy())
+    errors = np.asarray(errors)[order]
+    event_id = labels.iloc[order]["event_id"].to_numpy()
+    alarm = errors > threshold
+    out = []
+    for event in sorted(set(event_id[event_id >= 0].tolist())):
+        rows = np.flatnonzero(event_id == event)
+        fired = rows[alarm[rows]]
+        if len(fired):
+            out.append((fired[0] - rows[0]) * WINDOW_MINUTES)
+    return np.array(out, dtype="float64")
+
 def evaluate(errors: np.ndarray, labels: pd.DataFrame, threshold: float) -> Scores:
 \
 \
@@ -150,12 +168,7 @@ def evaluate(errors: np.ndarray, labels: pd.DataFrame, threshold: float) -> Scor
             if precision_e + recall_e else 0.0)
     false = episodes - hit
 
-    delays = []
-    for event in events:
-        rows = np.flatnonzero(event_id == event)
-        fired = rows[alarm[rows]]
-        if len(fired):
-            delays.append((fired[0] - rows[0]) * WINDOW_MINUTES)
+    delays = detection_delays(errors, frame, threshold)
 
     clean_days = (~truth).sum() * WINDOW_MINUTES / 1440
 
@@ -170,8 +183,8 @@ def evaluate(errors: np.ndarray, labels: pd.DataFrame, threshold: float) -> Scor
         f1_event=float(f1_e),
         pr_auc_event=_event_pr_curve(errors, contiguous, event_id),
         recall_event=float(recall_e),
-        delay_median_min=float(np.median(delays)) if delays else float("nan"),
-        delay_p90_min=float(np.percentile(delays, 90)) if delays else float("nan"),
+        delay_median_min=float(np.median(delays)) if len(delays) else float("nan"),
+        delay_p90_min=float(np.percentile(delays, 90)) if len(delays) else float("nan"),
         false_alarms_per_day=float(false / clean_days) if clean_days else float("nan"),
     )
 
