@@ -1,90 +1,106 @@
-# gtfs-olap
+# GTFS-FL: Federacyjna detekcja anomalii w transporcie publicznym (ZTM GZM)
 
-Kolektor i hurtownia danych dla strumienia GTFS-Realtime ZTM (Metropolia GZM).
-Odpytuje feed co 20 sekund, składuje opóźnienia w TimescaleDB i archiwizuje
-surowe migawki na Google Drive. Na tych danych stoi część uczeniowa —
-federacyjna detekcja anomalii.
+System zbierania danych ze strumienia GTFS-Realtime (Metropolia GZM), przetwarzania ich w architekturze hurtowni danych (TimescaleDB / PostgreSQL) oraz federacyjnego uczenia maszynowego (Flower) do detekcji anomalii w ruchu komunikacji miejskiej.
+
+---
+
+## Główne moduły projektu
+
+1. **ETL i archiwizacja**: Pobieranie danych GTFS-RT co 20 sekund, ciągła agregacja w TimescaleDB oraz archiwizacja surowych migawek.
+2. **Potok inżynierii cech**: Agregacja w oknach 15-minutowych dla 9 węzłów federacji (21 operatorów transportowych).
+3. **Uczenie federacyjne (FL)**: Symulacja federacyjna z autoenkoderem GRU oparta na bibliotece Flower (algorytmy: FedAvg, FedProx, FedMedian, FedTrimmedAvg).
+4. **Ewaluacja anomalii**: Generator syntetycznych incydentów ruchowych (A1–D2) oraz badania adaptacji do dryfu (E1–E5).
+
+---
 
 ## Wymagania
 
-- Docker z Compose v2
-- rclone skonfigurowany na Google Drive (`secrets/rclone.conf`)
-- Python 3.10+ do części uczeniowej
+- Docker i Docker Compose v2
+- Python 3.10+ (do uruchamiania eksperymentów FL)
+- `rclone` (opcjonalnie, do automatycznej synchronizacji z dyskiem chmurowym)
+
+---
 
 ## Szybki start
 
+### 1. Uruchomienie bazy danych i kolektora ETL
+
 ```bash
+# Przygotowanie katalogów i uprawnień
 sudo mkdir -p /srv/gtfs/pgdata /srv/gtfs/data && sudo chown -R 10001:10001 /srv/gtfs/data
-cp .env.example .env    # uzupełnij hasło i remote rclone
+
+# Konfiguracja środowiska
+cp .env.example .env
+
+# Start usług w Dockerze
 docker compose up -d --build
+
+# Inicjalizacja słowników i rozkładów jazdy (Static ETL)
 docker compose run --rm maintenance python scripts/run_static_etl.py
 ```
 
-Static ETL trzeba puścić raz ręcznie — zasila słowniki i rozkład, bez których
-kolektor nie ruszy. Potem harmonogram prowadzi się sam.
+### 2. Środowisko lokalne (Dev / Windows)
 
-Lokalnie (Windows/dev) nakładka podmienia linuksowe ścieżki na wolumen Dockera:
+Do pracy developerskiej przygotowano konfigurację z wolumenem lokalnym:
 
 ```bash
+# Uruchomienie samej bazy danych
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
+
+# Instalacja zależności w środowisku Python
 pip install -e ".[uczenie]"
+
+# Jednorazowy testowy przebieg pobierania danych RT
 python scripts/run_rt_etl.py --once
 ```
 
-## Zmienne środowiskowe
+---
 
-| zmienna | domyślnie | uwagi |
-|---|---|---|
-| `GTFS_DB_URL` | — | wymagana, bez fallbacku |
-| `GTFS_RAW_DIR` | `/data/raw` | staging przed wysyłką |
-| `GTFS_EXPORT_DIR` | `/data/export` | Parquety dobowe |
-| `GTFS_RT_INTERVAL_S` | `20` | takt odpytywania feedu |
-| `GTFS_ARCHIVE_VP` | `1` | archiwum `vehiclePositions`, bez parsowania |
-| `GTFS_RCLONE_REMOTE` | `gdrive:gtfs-olap` | cel archiwizacji |
-| `GTFS_FACTS_RETENTION_H` | `48` | **musi być > `start_offset` agregatów (6h)** |
-| `GTFS_UPLOAD_QUIET_MIN` | `10` | ile ciszy w katalogu przed wysyłką |
-| `GTFS_HEALTHCHECK_URL` | pusta | pusta = tylko logi |
-| `GTFS_MIN_FREE_GB` | `15` | próg alarmu o dysku |
+## Architektura bazy danych
 
-## Baza
+Projekt wykorzystuje schemat gwiazdy zoptymalizowany pod kątem szeregów czasowych:
+- **Hipertabela faktów**: `fakt_opoznienia` (pojedyncze obserwacje odchyleń od rozkładu na zatrzymaniach).
+- **Tabele wymiarów**: `dim_linia`, `dim_przystanek`, `dim_operator`, `dim_data`, `dim_wersja_rozkladu`.
+- **Szybki bufor**: `lookup_schedule` (zdenormalizowany rozkład ładowany do pamięci podręcznej kolektora).
+- **Agregaty ciągłe (TimescaleDB)**: `ca_opoznienia_15min` (podstawa cech modeli FL), `ca_opoznienia_1h`, `ca_opoznienia_dzien`.
+- **Monitoring działania**: `fakt_etl_run` (rejestr każdego cyklu pobierania, używany do wykrywania przerw w danych).
 
-Schemat gwiazdy. Hipertabela `fakt_opoznienia` (jedna obserwacja opóźnienia na
-zatrzymaniu) plus wymiary `dim_linia`, `dim_przystanek`, `dim_operator`,
-`dim_data`, `dim_wersja_rozkladu`. `lookup_schedule` trzyma zdenormalizowany
-rozkład — kolektor ładuje go w całości do pamięci, bo feed nie podaje `stop_id`
-i trzeba dopasowywać po `(trip_id, stop_sequence)`.
+---
 
-Agregaty ciągłe: `ca_opoznienia_15min` (źródło cech modelu), `_1h`, `_dzien`
-oraz wariant przystankowy pod wizualizacje. `fakt_etl_run` rejestruje każdy
-przebieg kolektora i jest jedynym źródłem do inwentaryzacji luk.
+## Przegląd skryptów
 
-Surowe fakty żyją lokalnie 48 godzin. Kasuje je zadanie nocne — ale dopiero po
-tym, jak `rclone check --checksum` potwierdzi kopię na Drive. Polityki retencji
-TimescaleDB na faktach celowo nie ma, bo kasowałaby według zegara.
-
-## Skrypty
-
-| skrypt | do czego |
+| Skrypt | Zastosowanie |
 |---|---|
-| `run_static_etl.py` | słowniki i `lookup_schedule` z paczek CKAN |
-| `run_rt_etl.py` | pętla RT, `--once` dla jednego cyklu |
-| `audit_data.py` | pokrycie strumienia i sensowność kolumn |
-| `inventory_gaps.py` | luki w zbieraniu z `fakt_etl_run` |
-| `check_dim_data.py` | diagnostyka `typ_dnia` |
-| `backfill_export.py` | eksport zakresu dat na Drive |
-| `build_features.py` | macierz cech i sekwencje wejściowe |
-| `run_federation.py` | trening federacyjny vs model lokalny |
-| `verify_pipeline.py` | niezmienniki potoku i agregacji |
-| `bootstrap_vps.sh` | przygotowanie świeżego serwera |
+| `scripts/run_static_etl.py` | Pobieranie i ładowanie rozkładów statycznych z CKAN |
+| `scripts/run_rt_etl.py` | Główna pętla zbierania danych czasu rzeczywistego (GTFS-RT) |
+| `scripts/build_features.py` | Budowanie macierzy 11 cech i sekwencji czasowych |
+| `scripts/run_federation.py` | Trening modeli federacyjnych vs modele lokalne |
+| `scripts/inject_events.py` | Wstrzykiwanie syntetycznych anomalii opóźnień (A1–D2) |
+| `scripts/run_e1.py` – `run_e5.py` | Wykonywanie eksperymentów badawczych E1–E5 |
+| `scripts/aggregate_seeds.py` | Zbiorcze podsumowanie wyników z wielu ziaren losowości |
+| `scripts/make_figures.py` | Generowanie wykresów i wizualizacji wyników |
+| `scripts/describe_dataset.py` | Generowanie pełnego raportu statystycznego o zbiorze danych |
+| `scripts/audit_data.py` | Audyt spójności i jakości zebranych danych |
+| `scripts/verify_pipeline.py` | Testy poprawności i niezmienników potoku danych |
 
-## Harmonogram
+---
 
-Kontener `maintenance` odpala przez supercronic: wysyłkę archiwum co 15 minut,
-zadanie nocne o 03:30, static ETL o 04:00 i healthcheck co 10 minut.
+## Konfiguracja zmiennych środowiskowych
 
-## Część uczeniowa
+| Zmienna | Domyślnie | Opis |
+|---|---|---|
+| `GTFS_DB_URL` | — | Connection string do bazy PostgreSQL / TimescaleDB (wymagany) |
+| `GTFS_RAW_DIR` | `/data/raw` | Katalog bufora surowych migawek przed wysyłką |
+| `GTFS_EXPORT_DIR` | `/data/export` | Katalog dobowych eksportów Parquet |
+| `GTFS_RT_INTERVAL_S` | `20` | Interwał odpytywania feedu GTFS-RT (w sekundach) |
+| `GTFS_ARCHIVE_VP` | `1` | Flaga archiwizacji surowych pakietów `VehiclePositions` |
+| `GTFS_RCLONE_REMOTE` | `gdrive:gtfs-olap` | Nazwa zdalnego zasobu rclone do kopii zapasowych |
+| `GTFS_FACTS_RETENTION_H` | `48` | Czas przechowywania surowych faktów w bazie (godziny) |
+| `GTFS_UPLOAD_QUIET_MIN` | `10` | Czas bezczynności przed wysłaniem plików do archiwum |
+| `GTFS_MIN_FREE_GB` | `15` | Próg wolnego miejsca na dysku uruchamiający ostrzeżenie |
 
-`clients.py` mapuje 21 operatorów na 9 klientów federacji, `features.py` liczy
-cechy na okno 15-minutowe, `model.py` to autoenkoder GRU (~40 tys. parametrów),
-`federation.py` uruchamia symulację na strategiach Flower — FedAvg, FedProx,
-FedMedian, FedTrimmedAvg.
+---
+
+## Dokumentacja zbioru danych
+
+Szczegółowy opis statystyczny zbioru, definicje 11 cech oraz charakterystykę podziału na węzły federacji zawiera plik [docs/zbior-danych.md](docs/zbior-danych.md).

@@ -14,7 +14,7 @@ from loguru import logger
 
 from gtfs_olap.config import DB_URL, EXPORT_DIR
 from gtfs_olap.maintenance import export
-from gtfs_olap.maintenance.rclone import dostepny, wyslij_i_zweryfikuj
+from gtfs_olap.maintenance.rclone import available, upload_and_verify
 
 def _zakres_w_bazie() -> tuple[date, date] | None:
     with psycopg.connect(DB_URL) as conn, conn.cursor() as cur:
@@ -42,20 +42,20 @@ def main() -> int:
         logger.error("--od jest późniejsze niż --do")
         return 1
 
-    if not args.bez_wysylki and not dostepny():
+    if not args.bez_wysylki and not available():
         return 1
 
     dzien = od
     puste = []
     while dzien <= do:
         logger.info(f"--- {dzien} ---")
-        if export.eksport_faktow(dzien) is None:
+        if export.export_facts(dzien) is None:
             puste.append(dzien)
-        export.eksport_agregatu(dzien)
-        export.eksport_etl_run(dzien)
+        export.export_aggregate(dzien)
+        export.export_etl_run(dzien)
         dzien += timedelta(days=1)
 
-    export.eksport_wymiarow()
+    export.export_dimensions()
 
     if puste:
         logger.warning(f"Dni bez faktów ({len(puste)}): "
@@ -67,7 +67,7 @@ def main() -> int:
         logger.info(f"Pominięto wysyłkę. Pliki w {EXPORT_DIR}")
         return 0
 
-    if not wyslij_i_zweryfikuj(EXPORT_DIR, "export"):
+    if not upload_and_verify(EXPORT_DIR, "export"):
         logger.error("Wysyłka nieudana - NIE przycinaj bazy")
         return 1
 

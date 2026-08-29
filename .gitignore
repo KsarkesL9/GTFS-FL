@@ -33,3 +33,10 @@ tmp/
 *.pb.gz
 *.pbix
 wykresy/
+
+*.pdf
+*.docx
+make_raport_figures.py
+make_report_figures.py
+scripts/make_raport_figures.py
+scripts/make_report_figures.py
