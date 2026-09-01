@@ -1,8 +1,3 @@
-\
-\
-\
-\
-
 from __future__ import annotations
 
 import os
@@ -44,8 +39,6 @@ def _check_collector() -> str | None:
     return None
 
 def _check_feed() -> str | None:
-\
-\
 
     if not 5 <= datetime.now(TZ).hour < 23:
         return None

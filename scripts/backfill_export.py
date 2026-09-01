@@ -1,11 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-
 import argparse
 from datetime import date, datetime, timedelta
 

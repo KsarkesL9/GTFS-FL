@@ -159,11 +159,6 @@ def _build_dim_operator(dfs):
     return out
 
 def _build_dim_data(dfs, start: date, end: date):
-\
-\
-\
-\
-\
 
     cal = dfs["calendar"].copy()
     cal["start"] = pd.to_datetime(cal["start_date"], format="%Y%m%d").dt.date
@@ -191,9 +186,6 @@ def _build_dim_data(dfs, start: date, end: date):
     return pd.DataFrame(rows)
 
 def _build_lookup_schedule(dfs):
-\
-\
-\
 
     trips = dfs["trips"].merge(
         dfs["trips_ext"][["trip_id", "operator_id"]], on="trip_id", how="left")
@@ -228,7 +220,6 @@ def _copy_df(conn, table: str, df: pd.DataFrame, cols: list[str]):
 
 def _upsert_df(conn, table: str, df: pd.DataFrame, cols: list[str], pk: list[str],
                set_overrides: dict[str, str] | None = None):
-\
 
     set_overrides = set_overrides or {}
     stg = f"_stg_{table}"
@@ -254,7 +245,6 @@ LOOKUP_COLS = ["wersja_id", "trip_id", "przystanek_id", "stop_sequence",
                "operator_id", "offset_dnia"]
 
 def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
-\
 
     cols = [c for c in LOOKUP_COLS if c != "wersja_id"]
     ordered = lookup[cols].sort_values(cols, kind="mergesort")
@@ -263,7 +253,6 @@ def _schedule_fingerprint(lookup: pd.DataFrame) -> str:
     ).hexdigest()
 
 def _export_lookup_snapshot(lookup: pd.DataFrame, wersja_id: int, dzien: date):
-\
 
     out = (RAW_DIR / "static" / f"dt={dzien:%Y-%m-%d}"
            / f"lookup_schedule_w{wersja_id}.parquet")
@@ -284,7 +273,6 @@ def _archive_packages(zip_paths: list[Path], dzien: date):
     logger.info(f"  archiwum paczek: {skopiowane} nowych z {len(zip_paths)} → {dest}")
 
 def _prune_lookup_schedule(conn, aktywna_wersja: int):
-\
 
     with conn.cursor() as cur:
         cur.execute("""

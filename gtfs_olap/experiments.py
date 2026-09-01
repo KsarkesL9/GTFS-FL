@@ -11,7 +11,6 @@ from gtfs_olap.federation import Client
 MIN_SEQUENCES = 10
 
 def load_clients(directory: Path, val_share: float = 0.2) -> list[Client]:
-\
 
     clients = []
     for path in sorted(directory.glob("client=*")):
@@ -29,7 +28,6 @@ def load_events(directory: Path, name: str) -> tuple[np.ndarray, pd.DataFrame]:
 
 def kind_subset(labels: pd.DataFrame, errors: np.ndarray,
                 kind: str) -> tuple[np.ndarray, pd.DataFrame]:
-\
 
     keep = (labels["event_id"] < 0) | (labels["event_kind"] == kind)
     return errors[keep.to_numpy()], labels[keep].reset_index(drop=True)

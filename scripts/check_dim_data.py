@@ -1,13 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 import psycopg
 from loguru import logger
 

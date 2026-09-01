@@ -1,11 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-
 import argparse
 import json
 from pathlib import Path
@@ -31,10 +23,6 @@ AGGREGATIONS = {
 }
 
 def poison_delays(X: np.ndarray) -> np.ndarray:
-\
-\
-\
-\
 
     out = X.copy()
     for name, shift in (("d", -POISON_SIGMA), ("dmax", -POISON_SIGMA),

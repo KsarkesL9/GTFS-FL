@@ -1,16 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 from __future__ import annotations
 
 CLIENTS: dict[str, list[str]] = {

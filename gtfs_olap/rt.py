@@ -38,7 +38,6 @@ def _sleep_until(deadline: float) -> None:
         time.sleep(min(left, 0.5))
 
 def _archive_raw(raw: bytes, header_ts: int, kind: str) -> bool:
-\
 
     try:
         dt = datetime.fromtimestamp(header_ts, tz=timezone.utc).astimezone(TZ)
@@ -76,9 +75,6 @@ def _is_alive(conn) -> bool:
         return False
 
 def _connect_with_retry(max_backoff_s: int = 60):
-\
-\
-\
 
     backoff = 5
     attempt = 0
@@ -170,7 +166,6 @@ class ScheduleCache:
                     f"{len(self._by_trip):,} kursów ({time.monotonic() - t0:.1f}s)")
 
 def _process_feed(feed, cache: ScheduleCache) -> list[tuple]:
-\
 
     snapshot_dt = datetime.fromtimestamp(feed.header.timestamp, tz=timezone.utc)
     snapshot_local_date = snapshot_dt.astimezone(TZ).date()
@@ -280,9 +275,6 @@ def _log_etl_run(conn, started_at, snapshot_ts, obserwacje,
         logger.error(f"Nie udało się zapisać audit log: {e}")
 
 def run_loop(interval_s: int = RT_INTERVAL_S, once: bool = False):
-\
-\
-\
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)

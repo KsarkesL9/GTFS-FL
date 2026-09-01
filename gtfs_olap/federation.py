@@ -1,8 +1,3 @@
-\
-\
-\
-\
-
 from __future__ import annotations
 
 import time
@@ -49,7 +44,6 @@ def run_federation(clients: list[Client], strategy: Strategy, rounds: int,
                    update_hook: Callable[[str, list[np.ndarray], list[np.ndarray]],
                                          list[np.ndarray]] | None = None
                    ) -> tuple[GRUAutoencoder, list[RoundResult]]:
-\
 
     _seed(seed)
 
@@ -109,7 +103,6 @@ def train_local(client: Client, n_features: int, hidden: int = 64,
 
 def train_centralized(clients: list[Client], n_features: int, hidden: int = 64,
                       epochs: int = 30, seed: int = 0) -> GRUAutoencoder:
-\
 
     _seed(seed)
     model = GRUAutoencoder(n_features, hidden)

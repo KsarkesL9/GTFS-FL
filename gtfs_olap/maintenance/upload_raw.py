@@ -18,7 +18,6 @@ def _dirs_with_files(root: Path) -> Iterator[tuple[Path, list[str]]]:
             yield Path(dirpath), filenames
 
 def _is_closed(directory: Path, files: list[str], quiet_s: float) -> bool:
-\
 
     newest = max((directory / f).stat().st_mtime for f in files)
     return (time.time() - newest) > quiet_s

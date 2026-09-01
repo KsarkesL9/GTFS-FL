@@ -20,7 +20,6 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
         [RCLONE_BIN, *args], capture_output=True, text=True, timeout=3600)
 
 def upload_and_verify(local: Path, subpath: str) -> bool:
-\
 
     target = f"{RCLONE_REMOTE}/{subpath}"
 

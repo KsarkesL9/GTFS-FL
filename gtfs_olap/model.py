@@ -1,8 +1,3 @@
-\
-\
-\
-\
-
 from __future__ import annotations
 
 import numpy as np
@@ -45,7 +40,6 @@ def alarm_threshold(errors: np.ndarray,
 def train(model: nn.Module, X: np.ndarray, epochs: int = 20, batch: int = 64,
           lr: float = 1e-3, mu: float = 0.0,
           global_weights: list[np.ndarray] | None = None) -> float:
-\
 
     if len(X) == 0:
         return float("nan")

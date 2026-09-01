@@ -1,15 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -39,7 +27,6 @@ class Scores:
         return asdict(self)
 
 def _episodes(alarm: np.ndarray, contiguous: np.ndarray) -> list[tuple[int, int]]:
-\
 
     spans, start = [], None
     for i, flag in enumerate(alarm):
@@ -54,7 +41,6 @@ def _episodes(alarm: np.ndarray, contiguous: np.ndarray) -> list[tuple[int, int]
 
 def _event_counts(alarm: np.ndarray, contiguous: np.ndarray,
                   event_id: np.ndarray) -> tuple[int, int, int, int]:
-\
 
     spans = _episodes(alarm, contiguous)
     hit = sum(1 for a, b in spans if (event_id[a:b + 1] >= 0).any())
@@ -63,13 +49,6 @@ def _event_counts(alarm: np.ndarray, contiguous: np.ndarray,
 
 def _event_pr(alarm: np.ndarray, contiguous: np.ndarray,
               event_id: np.ndarray) -> tuple[float, float]:
-\
-\
-\
-\
-\
-\
-\
 
     _, _, detected, total = _event_counts(alarm, contiguous, event_id)
     recall = detected / total if total else 0.0
@@ -79,15 +58,6 @@ def _event_pr(alarm: np.ndarray, contiguous: np.ndarray,
 
 def _event_pr_curve(errors: np.ndarray, contiguous: np.ndarray,
                     event_id: np.ndarray, steps: int = 60) -> float:
-\
-\
-\
-\
-\
-\
-\
-\
-\
 
     values = np.unique(errors)
     if len(values) < 2:
@@ -121,9 +91,6 @@ def _event_pr_curve(errors: np.ndarray, contiguous: np.ndarray,
 
 def detection_delays(errors: np.ndarray, labels: pd.DataFrame,
                      threshold: float) -> np.ndarray:
-\
-\
-\
 
     order = np.argsort(labels["window"].to_numpy())
     errors = np.asarray(errors)[order]
@@ -138,12 +105,6 @@ def detection_delays(errors: np.ndarray, labels: pd.DataFrame,
     return np.array(out, dtype="float64")
 
 def evaluate(errors: np.ndarray, labels: pd.DataFrame, threshold: float) -> Scores:
-\
-\
-\
-\
-\
-\
 
     order = np.argsort(labels["window"].to_numpy())
     errors = np.asarray(errors)[order]

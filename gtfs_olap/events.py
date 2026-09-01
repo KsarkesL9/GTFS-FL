@@ -1,21 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -60,9 +42,6 @@ def _configs(kind: str) -> list[float]:
 
 def _place(complete: np.ndarray, taken: np.ndarray, duration: int,
            rng: np.random.Generator) -> int | None:
-\
-\
-\
 
     starts = np.arange(BUFFER_WINDOWS, len(complete) - duration - BUFFER_WINDOWS)
     if not len(starts):
@@ -78,11 +57,6 @@ def _place(complete: np.ndarray, taken: np.ndarray, duration: int,
 def sample_events(df: pd.DataFrame, repeats: int, seed: int,
                   kinds: tuple[str, ...] = ANOMALY_KINDS,
                   split: str = "test") -> list[Event]:
-\
-\
-\
-\
-\
 
     rng = np.random.default_rng(seed)
     events: list[Event] = []
@@ -108,14 +82,6 @@ def sample_events(df: pd.DataFrame, repeats: int, seed: int,
 
 def sample_drift(df: pd.DataFrame, kind: str, param: float, seed: int,
                  split: str = "test") -> list[Event]:
-\
-\
-\
-\
-\
-\
-\
-\
 
     events: list[Event] = []
     for client, group in df[df["split"] == split].groupby("client", observed=True):
@@ -128,9 +94,6 @@ def sample_drift(df: pd.DataFrame, kind: str, param: float, seed: int,
     return events
 
 def daily_shape(train: pd.DataFrame) -> pd.DataFrame:
-\
-\
-\
 
     profile = (train.dropna(subset=["d"])
                .groupby(["client", "hour"], observed=True)["d"]
@@ -143,11 +106,6 @@ def daily_shape(train: pd.DataFrame) -> pd.DataFrame:
 
 def inject(df: pd.DataFrame, events: list[Event],
            shape: pd.DataFrame | None = None) -> pd.DataFrame:
-\
-\
-\
-\
-\
 
     out = df.sort_values(["client", "window"]).reset_index(drop=True).copy()
     out["event_id"] = -1

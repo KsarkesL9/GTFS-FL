@@ -1,15 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 from __future__ import annotations
 
 import glob
@@ -56,7 +44,6 @@ def load_facts(directory: str | Path) -> pd.DataFrame:
     return df
 
 def load_lookup(directory: str | Path) -> pd.DataFrame:
-\
 
     df = _read_parquet_tree(directory, "lookup")
     df = df.sort_values("stop_sequence").drop_duplicates(["wersja_id", "trip_id"])
@@ -116,7 +103,6 @@ def headway_irregularity(facts: pd.DataFrame, lookup: pd.DataFrame) -> pd.DataFr
             .mean().reset_index(name="h"))
 
 def time_grid(df: pd.DataFrame) -> pd.DataFrame:
-\
 
     windows = pd.date_range(df["window"].min(), df["window"].max(), freq=WINDOW, tz=TZ)
     clients = sorted(df["client"].unique())
@@ -124,7 +110,6 @@ def time_grid(df: pd.DataFrame) -> pd.DataFrame:
         [clients, windows], names=["client", "window"]).to_frame(index=False)
 
 def daily_profile(df: pd.DataFrame) -> pd.DataFrame:
-\
 
     return (df.dropna(subset=["d"])
             .groupby(["client", "hour", "workday"], observed=True)["d"]
@@ -181,7 +166,6 @@ def standardize(df: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
     return out.drop(columns=[f"{f}_{s}" for f in FEATURES for s in ("mean", "std")])
 
 def sequences(df: pd.DataFrame, length: int = 8) -> tuple[np.ndarray, pd.DataFrame]:
-\
 
     windows, labels = [], []
     for client, group in df.sort_values("window").groupby("client", observed=True):

@@ -1,22 +1,3 @@
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-
 import argparse
 import copy
 import json
@@ -41,17 +22,6 @@ def adapt(model, X: np.ndarray, threshold: float, recent: int, epochs: int,
           percentile: float, max_retrains: int, delta: float,
           exclude_alarms: bool = False,
           threshold_on_calm: bool = False) -> tuple[np.ndarray, list[int]]:
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
-\
 
     model = copy.deepcopy(model)
     errors = reconstruction_errors(model, X)

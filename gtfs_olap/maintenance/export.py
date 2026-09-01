@@ -1,8 +1,3 @@
-\
-\
-\
-\
-
 from __future__ import annotations
 
 from datetime import date, datetime, time as dtime, timedelta
@@ -39,7 +34,6 @@ def _day_bounds(day: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 def export_facts(day: date) -> Path | None:
-\
 
     start, end = _day_bounds(day)
     out = (EXPORT_DIR / "fakty" / f"dt={day:%Y-%m-%d}"
@@ -115,7 +109,6 @@ def export_aggregate(day: date) -> Path | None:
         f"ca_15min {day}")
 
 def export_etl_run(day: date) -> Path | None:
-\
 
     start, end = _day_bounds(day)
     return _export_small(

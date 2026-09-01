@@ -1,9 +1,3 @@
-\
-\
-\
-\
-\
-
 import sys
 
 from gtfs_olap.rt import run_loop
